@@ -1,0 +1,46 @@
+---
+title: Introduction
+description: What kerf is, what problem it solves, and how it differs from SOPS.
+---
+
+`kerf` encrypts values inside structured secret files — YAML, JSON, TOML, ENV — such that **a one-secret edit produces a one-line git diff**. The file structure stays diff-able; only the affected ciphertext changes.
+
+## The problem
+
+Tools like [SOPS](https://github.com/getsops/sops) encrypt structured secret files per-value, which is great for keeping the file readable. But every encryption operation generates a fresh nonce for every value, so editing one secret produces a diff that touches every encrypted line. Reviewers can see *that* secrets changed; they cannot see *which*.
+
+That breaks code review of secret changes. Rotation looks identical to a typo fix. Adding one variable looks identical to changing all of them.
+
+## The fix
+
+kerf holds a single invariant: **if a value's plaintext is unchanged across an encrypt operation, its on-disk ciphertext, nonce, and authentication tag MUST be byte-identical to the previous version**. The corollary matters too — if the plaintext *has* changed, the nonce is freshly drawn from the OS CSPRNG. AES-GCM nonce reuse is catastrophic.
+
+This means:
+
+| Edit | What changes in git |
+|---|---|
+| Change one secret value | one ciphertext line + the file MAC |
+| Add a new secret | one line added + the MAC |
+| Delete a secret | one line removed + the MAC |
+| Add a KMS recipient | one entry in the `kerf:` block; no value ciphertexts move |
+| Rotate the DEK (`kerf rotate`) | every value re-encrypted — the *one* operation that legitimately churns the whole file |
+
+## What kerf is not
+
+- It's not a SOPS file reader. The on-disk format is different — same KMS keys work, but [migration is a separate step](/kerf/getting-started/quickstart/#migrating-from-sops) once that command lands.
+- It's not a whole-file encryptor. If your *key names* are secret, use [age](https://age-encryption.org) directly.
+- It's not a daemon. DEKs live in memory only for the duration of the operation.
+
+## Compared to SOPS
+
+| | SOPS | kerf |
+|---|---|---|
+| Per-value encryption | yes | yes |
+| Diff-aware (byte-identical for unchanged) | no | **yes** |
+| KMS providers | AWS, GCP, Azure, Vault, PGP, age | AWS, GCP, Azure, age (v1) |
+| File formats | YAML, JSON, env, INI, binary | YAML, JSON, TOML, ENV, INI |
+| Reuses your existing KMS keys | — | yes, same ARNs/recipients |
+| Reuses your existing env vars | — | `SOPS_*` env vars honoured as fallback |
+| MAC | HMAC-SHA512 over walk | HMAC-SHA256 wrapped in AES-GCM |
+
+Next: [install kerf](/kerf/getting-started/installation/) and try the [quickstart](/kerf/getting-started/quickstart/).

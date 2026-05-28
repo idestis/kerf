@@ -1,0 +1,45 @@
+name: Deploy Docs to GitHub Pages
+
+# Fires on any push to main that touches docs/**. Astro Starlight build, then
+# publish to GitHub Pages at https://idestis.github.io/kerf/.
+#
+# One-time setup (in repo settings → Pages):
+#   Source: GitHub Actions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/**
+      - .github/workflows/deploy-docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one in-flight deploy at a time; queue subsequent ones.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with Astro
+        uses: withastro/action@v4
+        with:
+          path: ./docs
+          node-version: 22
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

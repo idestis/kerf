@@ -142,6 +142,37 @@ tasks:
     cmds:
       - cargo fuzz run {{.CLI_ARGS}} -- -max_total_time=300
 
+  # ───── docs ────────────────────────────────────────────────────────────
+
+  docs:install:
+    desc: 'Install docs site dependencies (one-time).'
+    dir: docs
+    status:
+      - test -d node_modules
+    cmds:
+      - npm install
+
+  docs:dev:
+    desc: 'Run the docs site locally at http://localhost:4321/kerf/.'
+    deps: [docs:install]
+    dir: docs
+    cmds:
+      - npm run dev
+
+  docs:build:
+    desc: 'Build the static docs site into docs/dist.'
+    deps: [docs:install]
+    dir: docs
+    cmds:
+      - npm run build
+
+  docs:preview:
+    desc: 'Serve the built docs site locally for a final check.'
+    deps: [docs:build]
+    dir: docs
+    cmds:
+      - npm run preview
+
   # ───── release ──────────────────────────────────────────────────────────
 
   release:

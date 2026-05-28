@@ -1,0 +1,39 @@
+---
+title: kerf
+description: Diff-aware, KMS-first encryption for structured secret files.
+template: splash
+hero:
+  tagline: Edit one secret, change one line of git diff. Not the whole file.
+  actions:
+    - text: Get started
+      link: /kerf/getting-started/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/idestis/kerf
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+A kerf is the narrow slit a saw cuts through wood — material removed only along the blade's path, the rest of the board untouched. `kerf` encrypts the same way: change one value in a YAML/JSON/TOML/ENV file, and only that value's ciphertext changes on disk.
+
+<CardGrid>
+  <Card title="The kerf rule" icon="approve-check">
+    If a value's plaintext is unchanged, its on-disk ciphertext, nonce, and authentication tag are byte-identical to the previous version. One cut. One diff.
+  </Card>
+  <Card title="KMS-first" icon="rocket">
+    AWS KMS, GCP KMS, Azure Key Vault, and age recipients. Same key types as SOPS; same env vars work for credential discovery.
+  </Card>
+  <Card title="Auditable changes" icon="seti:lock">
+    Reviewing a secret rotation actually shows you which secret rotated. Not just "some secrets changed in this PR".
+  </Card>
+  <Card title="No daemon, no cache" icon="setting">
+    DEKs live in memory only. No `~/.cache/kerf`. The `kerf exec` path keeps secrets out of disk entirely.
+  </Card>
+</CardGrid>
+
+:::caution[Status: pre-alpha]
+Most of the CLI is stubbed and the crypto layer is being built. Don't use it for real secrets yet. See [the contributing page](/kerf/contributing/development/) if you want to help land features.
+:::

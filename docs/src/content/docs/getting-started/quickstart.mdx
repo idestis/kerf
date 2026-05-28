@@ -1,0 +1,113 @@
+---
+title: Quickstart
+description: Encrypt your first file with kerf and an age recipient.
+---
+
+:::caution[Pre-alpha]
+The flow described here is the **target UX** for v0.2. Subcommands currently exit with `not yet implemented`. Track [implementation status](https://github.com/idestis/kerf/issues) for what's actually live.
+:::
+
+We'll use an [age](https://age-encryption.org) recipient for the walkthrough — no cloud setup needed. KMS recipients (AWS, GCP, Azure) work the same way; only the recipient specifier changes.
+
+## 1. Generate a keypair
+
+```bash
+brew install age   # or your distro's package
+age-keygen -o ~/.config/kerf/age.key
+# Public key: age1abcdef...
+```
+
+The public key (`age1abcdef…`) is your **recipient** — anyone with this can encrypt *to* you. The private key in the file is what decrypts; keep it on the machine, never in the repo.
+
+## 2. Tell kerf where to find your private key on decrypt
+
+```bash
+export SOPS_AGE_KEY_FILE=~/.config/kerf/age.key
+```
+
+kerf honours `SOPS_AGE_KEY_FILE` and `SOPS_AGE_KEY` for compatibility — if you already run SOPS, your existing env vars work unchanged.
+
+## 3. Encrypt a file
+
+```bash
+cat > secrets.yaml <<'EOF'
+db:
+  host: db.prod.internal
+  password: hunter2
+api:
+  token: ghp_xxxxxxxxxxxxxxxx
+EOF
+
+kerf encrypt secrets.yaml \
+  --age age1abcdef... \
+  --output secrets.kerf.yaml
+```
+
+You can also set the recipient via env var so it doesn't appear on every command line:
+
+```bash
+export KERF_AGE_RECIPIENTS=age1abcdef...
+kerf encrypt secrets.yaml --output secrets.kerf.yaml
+```
+
+`KERF_AGE_RECIPIENTS` and the SOPS-style `SOPS_AGE_RECIPIENTS` are both honoured.
+
+## 4. Inspect the output
+
+```yaml
+# secrets.kerf.yaml
+db:
+  host: db.prod.internal
+  password: ENC[AES-GCM,n:9wK3y...,c:Hf82L...,t:9aB1c...]
+api:
+  token: ENC[AES-GCM,n:p0Qm1...,c:Ks83x...,t:7vN2m...]
+
+kerf:
+  version: 1
+  cipher: aes-256-gcm
+  recipients:
+    - type: age
+      recipient: age1abcdef...
+      encrypted_dek: BASE64...
+  mac: ENC[AES-GCM,n:...,c:...,t:...]
+```
+
+The structure of your file is preserved. Only values matching the `encrypted_regex` (by default `password|token|key|secret|credential`) are encrypted; the rest stays readable.
+
+## 5. Edit one value
+
+```bash
+# Change the password locally, re-encrypt
+vim secrets.yaml
+kerf encrypt secrets.yaml --output secrets.kerf.yaml
+
+git diff secrets.kerf.yaml
+# +  password: ENC[AES-GCM,n:NEW_NONCE,c:NEW_CIPHER,t:NEW_TAG]
+# -  password: ENC[AES-GCM,n:OLD_NONCE,c:OLD_CIPHER,t:OLD_TAG]
+# +  mac: ENC[AES-GCM,n:...,c:...,t:...]
+# -  mac: ENC[AES-GCM,n:...,c:...,t:...]
+```
+
+**Two lines changed.** The api.token ciphertext is byte-identical to the previous version. That's the kerf rule.
+
+## 6. Decrypt
+
+```bash
+kerf decrypt secrets.kerf.yaml
+# prints decrypted YAML to stdout
+
+kerf decrypt secrets.kerf.yaml --output secrets.yaml
+# writes to file
+```
+
+## 7. Use secrets without writing plaintext to disk
+
+```bash
+kerf exec secrets.kerf.yaml -- ./my-app
+# Decrypts in memory, sets DB_PASSWORD=… and API_TOKEN=… in the child env, exec.
+# No temp file. No plaintext on disk.
+```
+
+## Migrating from SOPS
+
+If you have existing SOPS files using AWS KMS / age recipients, your **keys** work unchanged — point kerf at the same ARN/recipient. The **files** themselves need a one-time format conversion via `kerf import-sops` (planned for v0.2).

@@ -1,0 +1,89 @@
+---
+title: CLI commands
+description: kerf command surface — porcelain and plumbing.
+---
+
+:::caution[Pre-alpha]
+Per-command reference pages will land as each command is implemented. For now, `kerf --help` and `kerf <subcommand> --help` are the authoritative source — they're generated from the clap definitions in `kerf-cli/src/main.rs`.
+:::
+
+## Command tree
+
+kerf follows git's split between **porcelain** (human-facing, may evolve) and **plumbing** (scriptable, stable contract).
+
+### Porcelain
+
+```
+kerf init [--recipient KEY]...
+kerf encrypt <file> [--output PATH] [--in-place] [--age KEY] [--kms ARN] [--gcp-kms ID] [--azure-kv URL]
+kerf decrypt <file> [--output PATH]
+kerf edit <file>
+kerf view <file> [--path DOTTED.PATH]
+kerf diff <old> <new> [--show-values]
+kerf exec <file> -- <command> [args...]
+```
+
+### Recipient management
+
+```
+kerf keys add    <file> --recipient <key>
+kerf keys remove <file> --recipient <key>
+kerf keys list   <file>
+kerf updatekeys  <file>
+```
+
+### Rotation
+
+```
+kerf rotate <file> [--reason "<msg>"]
+```
+
+### Operational
+
+```
+kerf verify <file>
+kerf set    <file> <path> [--stdin | <value>]
+kerf unset  <file> <path>
+```
+
+### Plumbing (stable)
+
+```
+kerf recipients <file>
+kerf metadata   <file>
+kerf mac --verify <file>
+kerf path-encrypted <file> <path>
+```
+
+## Recipient specifiers
+
+When passing recipients on the command line:
+
+| Type | Flag | Example |
+|---|---|---|
+| AWS KMS | `--kms <arn>` | `--kms arn:aws:kms:us-east-1:111:key/prod-secrets` |
+| GCP KMS | `--gcp-kms <id>` | `--gcp-kms projects/p/locations/l/keyRings/r/cryptoKeys/k` |
+| Azure Key Vault | `--azure-kv <url>` | `--azure-kv https://vault.vault.azure.net/keys/mykey/version` |
+| age | `--age <recipient>` | `--age age1abcdef…` |
+
+All flags may be repeated for multiple recipients. The recipient flags are intentionally compatible with SOPS so muscle memory carries over.
+
+## Environment variables
+
+To avoid passing recipients on every invocation, kerf reads several env vars. **SOPS-prefixed env vars are honoured as fallback** so existing SOPS users can keep their env setup unchanged.
+
+| Variable | Purpose |
+|---|---|
+| `KERF_KMS_ARN` / `SOPS_KMS_ARN` | Comma-separated AWS KMS ARNs |
+| `KERF_GCP_KMS_IDS` / `SOPS_GCP_KMS_IDS` | Comma-separated GCP KMS resource IDs |
+| `KERF_AZURE_KEYVAULT_URLS` / `SOPS_AZURE_KEYVAULT_URLS` | Comma-separated Azure Key Vault key URLs |
+| `KERF_AGE_RECIPIENTS` / `SOPS_AGE_RECIPIENTS` | Comma-separated age recipients |
+| `KERF_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE` | Path to age private key file (for decrypt) |
+| `KERF_AGE_KEY` / `SOPS_AGE_KEY` | Inline age private key (for decrypt) |
+| `KERF_CONFIG` | Path to `.kerf.yaml` (default: walk up from cwd) |
+
+Precedence: explicit CLI flag > `KERF_*` env var > `SOPS_*` env var > `.kerf.yaml` creation rules.
+
+## Exit codes
+
+See [exit codes](/kerf/reference/exit-codes/).

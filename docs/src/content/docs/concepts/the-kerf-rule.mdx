@@ -1,0 +1,67 @@
+---
+title: The kerf rule
+description: The single invariant kerf exists to uphold, and why it matters.
+---
+
+## The rule
+
+> If a value's plaintext is unchanged across an encrypt operation, its on-disk ciphertext, nonce, and authentication tag MUST be byte-identical to the previous version.
+
+This is the entire reason kerf exists. Every implementation decision is downstream of it. If you find code that violates this, it's a bug — please [file an issue](https://github.com/idestis/kerf/issues).
+
+## The corollary
+
+> If a value's plaintext **has** changed, the nonce MUST be fresh from the OS CSPRNG. Never reuse a nonce under the same DEK.
+
+AES-GCM nonce reuse is catastrophic — it leaks plaintext relationships and enables tag forgery. The byte-identity guarantee for *unchanged* values is only safe because we never reuse a nonce when something *did* change.
+
+## Why this matters
+
+SOPS rerolls the DEK and every nonce on every encrypt operation. The cryptographic argument is "this is conservative, fresher is safer." The practical consequence is that one secret change produces a diff like this:
+
+```diff
+-  password: ENC[AES256_GCM,data:Xy7K2L,iv:9wKQ3y,tag:1aB2c3,type:str]
++  password: ENC[AES256_GCM,data:Hf82Lq,iv:p0Qm1z,tag:9aB1cN,type:str]
+-  api_token: ENC[AES256_GCM,data:Aa1B2c,iv:3dE4fG,tag:5hI6jK,type:str]
++  api_token: ENC[AES256_GCM,data:Lm7N8o,iv:9pQ0rS,tag:tT1uV2,type:str]
+-  smtp_password: ENC[AES256_GCM,data:Wx3Y4z,iv:5aB6cD,tag:7eF8gH,type:str]
++  smtp_password: ENC[AES256_GCM,data:Ij9K0l,iv:1mN2oP,tag:3qR4sT,type:str]
+```
+
+The reviewer changed *one* of those three values. Which one? Impossible to tell without decrypting both versions and diffing the plaintext — which defeats the point of code review.
+
+With kerf, the same edit produces:
+
+```diff
+-  password: ENC[AES-GCM,n:9wK3y,c:Hf82L,t:9aB1c]
++  password: ENC[AES-GCM,n:p0Qm1,c:Ks83x,t:7vN2m]
+```
+
+Reviewer sees: one value changed. Approve or push back based on that.
+
+## What it does NOT mean
+
+- **Same plaintext encrypted twice gives the same ciphertext.** No — that would be deterministic encryption, which leaks equality (you could see that two fields hold the same secret). The byte-identity applies *across encrypt operations on the same file*, where we have the previous ciphertext to copy.
+- **The file's overall content-addressable hash is stable.** No — the MAC always changes when anything changes (including unrelated metadata like recipient additions). That's by design; the MAC is what catches tampering.
+- **Forward secrecy.** No — anyone who held the DEK and a previous version of the file can still decrypt that historical version. Rotate the DEK (`kerf rotate`) to limit blast radius going forward.
+
+## How it's enforced
+
+The diff-aware encrypt algorithm (SPEC § 6.2):
+
+```
+if out_path exists:
+    decrypt each value in out_path → old_plain map
+    for each leaf in plain_path:
+        if old_plain[path] == new_value:
+            copy the original ENC[] envelope byte-for-byte
+        else:
+            generate fresh nonce, encrypt with AAD = path
+```
+
+Two property tests in CI guard this invariant:
+
+1. **Byte-identity test:** encrypt a file, change one value, re-encrypt. Diff the two outputs — exactly one envelope (plus the MAC) must differ.
+2. **Nonce-uniqueness test:** encrypt the same value to the same DEK 10,000 times across separate runs — all nonces must be distinct.
+
+Both tests fail loudly if the invariant breaks.

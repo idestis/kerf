@@ -1,0 +1,42 @@
+---
+title: Exit codes
+description: Stable exit code contract — scripts should rely on these.
+---
+
+Exit codes are part of the CLI contract (SPEC § 7.6). They are versioned and will not change meaning between minor releases. If you script around kerf, switch on the exit code rather than parsing stderr.
+
+| Code | Meaning | Typical cause |
+|---|---|---|
+| `0` | Success | — |
+| `1` | Generic error | File I/O, parse failure, unknown internal error |
+| `2` | Usage error | Bad flag combination, missing required argument |
+| `10` | No usable recipient credential | Couldn't unwrap the DEK with any configured recipient — KMS auth missing, age key not on disk |
+| `11` | MAC verification failed | File was tampered with, or one of the encrypted values was edited by hand |
+| `12` | AAD verification failed | A ciphertext was moved between paths (e.g. attacker swapped `db.password` and `api.token`) |
+| `13` | Recipient unwrap failed | KMS denied the `Decrypt` call — key revoked, IAM policy changed, encryption context mismatch |
+| `20` | Plaintext input not valid YAML/JSON/TOML/ENV | Format parse error on the input file |
+
+## Distinguishing 11 vs 12
+
+Both indicate the file is not what you expect, but the response should differ:
+
+- **`11` (MAC failure)** means the file's *contents* don't match its claimed integrity. Likely tampering or corruption. Treat as a security event — do not retry, do not run with the partial decrypt.
+- **`12` (AAD failure)** means a specific ciphertext was *moved* to a different path. This is a more pointed attack signal — someone tried to substitute values. Same security response, but the forensic trail differs.
+
+They are kept distinct deliberately. Don't collapse them in error handling.
+
+## Scripting example
+
+```bash
+#!/usr/bin/env bash
+set -e
+
+if ! kerf verify secrets.kerf.yaml; then
+  case $? in
+    11) echo "ALERT: MAC failure — file tampered"; page-oncall ;;
+    12) echo "ALERT: AAD failure — ciphertext substitution"; page-oncall ;;
+    10|13) echo "Auth issue, not a security event"; exit 1 ;;
+    *)  echo "Unexpected exit $?"; exit 1 ;;
+  esac
+fi
+```

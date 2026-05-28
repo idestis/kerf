@@ -1,0 +1,87 @@
+---
+title: Installation
+description: Install kerf from GitHub Releases, Cargo, or build from source.
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+
+:::caution[Pre-alpha]
+v0.1.x ships a compilable CLI stub; most subcommands exit `not yet implemented`. Use these install paths to dogfood the release pipeline — not to protect real secrets.
+:::
+
+## Supported platforms
+
+| OS | Architecture |
+|---|---|
+| Linux | x86_64, aarch64 |
+| macOS | arm64, x86_64 |
+| Windows | x86_64 |
+
+## Install
+
+<Tabs>
+  <TabItem label="GitHub Releases">
+    Download the signed archive for your platform from [releases](https://github.com/idestis/kerf/releases). Verify the checksum against `SHA256SUMS`, extract, and put `kerf` on your `PATH`.
+
+    ```bash
+    VERSION=0.1.0
+    TARGET=aarch64-apple-darwin   # or x86_64-unknown-linux-gnu, etc.
+
+    curl -LO "https://github.com/idestis/kerf/releases/download/v${VERSION}/kerf-v${VERSION}-${TARGET}.tar.gz"
+    curl -LO "https://github.com/idestis/kerf/releases/download/v${VERSION}/SHA256SUMS"
+    shasum -a 256 -c SHA256SUMS --ignore-missing
+
+    tar -xzf "kerf-v${VERSION}-${TARGET}.tar.gz"
+    sudo mv "kerf-v${VERSION}-${TARGET}/kerf" /usr/local/bin/
+    kerf --version
+    ```
+  </TabItem>
+
+  <TabItem label="Cargo">
+    Requires Rust 1.75 or newer.
+
+    ```bash
+    cargo install --git https://github.com/idestis/kerf kerf-cli
+    ```
+
+    For a release binary from a local checkout:
+
+    ```bash
+    git clone https://github.com/idestis/kerf
+    cd kerf
+    cargo build --release -p kerf-cli
+    ./target/release/kerf --version
+    ```
+  </TabItem>
+
+  <TabItem label="Homebrew">
+    :::note[Planned]
+    A Homebrew tap at `idestis/homebrew-kerf` will land alongside the first stable release. Until then, use the GitHub Releases archives.
+    :::
+
+    ```bash
+    brew tap idestis/kerf
+    brew install kerf
+    ```
+  </TabItem>
+</Tabs>
+
+## Verify the install
+
+```bash
+kerf --version
+# kerf 0.1.0
+```
+
+## Uninstall
+
+```bash
+# binary
+sudo rm /usr/local/bin/kerf
+
+# cargo install
+cargo uninstall kerf-cli
+
+# homebrew
+brew uninstall kerf && brew untap idestis/kerf
+```

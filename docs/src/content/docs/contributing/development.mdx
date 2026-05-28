@@ -1,0 +1,154 @@
+---
+title: Development workflow
+description: How to build, test, and ship changes to kerf.
+---
+
+import { Steps } from "@astrojs/starlight/components";
+
+This page is the contributor's quick reference. The authoritative rules live in [`CLAUDE.md`](https://github.com/idestis/kerf/blob/main/CLAUDE.md) at the repo root — read it before doing substantive work, especially on `kerf-core`.
+
+## Prerequisites
+
+| Tool | Why | Install |
+|---|---|---|
+| Rust ≥ 1.75 | MSRV | `rustup install 1.75` or `brew install rust` |
+| [Task](https://taskfile.dev) | Repo automation | `brew install go-task` |
+| [git-cliff](https://git-cliff.org) | Changelog + version bumping | `brew install git-cliff` |
+| [cargo-deny](https://embarkstudios.github.io/cargo-deny/) | Supply-chain audit | `cargo install cargo-deny` |
+| [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html) | Fuzz targets | `cargo install cargo-fuzz` (nightly required for `cargo fuzz run`) |
+| `gh` CLI | Release workflow | `brew install gh` |
+| `age` | Local-recipient testing | `brew install age` |
+
+## Crate layout
+
+```
+crates/
+  kerf-core/   # format, crypto, diff-aware encrypt algorithm. No I/O. No async. No clock.
+  kerf-kms/    # KMS recipients. Async lives here.
+  kerf-cli/    # the binary. CLI parsing, file I/O, exit codes.
+```
+
+`kerf-core` is the security-critical surface. Keep it pure — anything that touches the filesystem, the env, or the network belongs in `kerf-cli` or `kerf-kms`. This is what makes the crypto testable.
+
+## Common tasks
+
+```bash
+task            # list everything
+task test       # cargo test --workspace
+task lint       # fmt --check + clippy -D warnings + cargo-deny
+task fmt        # cargo fmt --all
+task build      # release binary at target/release/kerf
+
+task test:core  # fast core-only tests, release profile
+task fuzz -- envelope_parser    # run a fuzz target for 5 minutes
+```
+
+## Day-to-day
+
+<Steps>
+
+1. **Branch off `main`.** Conventional Commits drive the changelog and version bump — see [commit hygiene](#commit-hygiene) below.
+
+2. **Read [`SPEC.md`](https://github.com/idestis/kerf/blob/main/SPEC.md)** if you're touching crypto, format, or the encrypt algorithm. The on-disk format is a stability contract; "improvements" usually break security properties.
+
+3. **Write the test first** if your change touches `kerf-core`. Every PR that touches `kerf-core` adds or extends a property test for the minimal-diff invariant.
+
+4. **Run `task lint`** locally before pushing — CI will block on `fmt --check`, `clippy -D warnings`, and `cargo-deny`.
+
+5. **Open a PR.** CI runs across Linux + macOS + Windows, plus an MSRV (1.75) check. All four must pass.
+
+</Steps>
+
+## Adding a new CLI subcommand
+
+The clap definitions live in `crates/kerf-cli/src/main.rs`. Adding a subcommand:
+
+1. Add a variant to `enum Command` with the relevant flags and value types.
+2. Wire the match arm in `fn run` to call into `kerf-core` / `kerf-kms`.
+3. Decide the exit code on failure — see [exit codes](/kerf/reference/exit-codes/). Add to `mod exit` if a new code is needed (and update SPEC § 7.6 in the same PR).
+4. Update the [CLI reference page](/kerf/reference/cli/) to list the new command.
+5. If the command takes sensitive input, ensure it accepts `--stdin` and never accepts the value as a positional arg (avoids leaking via shell history and `ps`).
+
+## Adding a new KMS recipient
+
+Each provider implements a `Recipient` trait in `kerf-kms`:
+
+```rust
+#[async_trait]
+pub trait Recipient: Send + Sync {
+    fn kind(&self) -> &'static str;
+    async fn wrap(&self, dek: &Dek) -> Result<WrappedDek>;
+    async fn unwrap(&self, wrapped: &WrappedDek) -> Result<Dek>;
+}
+```
+
+Each implementation:
+- Lives in its own module under `crates/kerf-kms/src/<provider>/`.
+- Uses the **official SDK** (`aws-sdk-kms`, `google-cloud-kms`, `azure_security_keyvault_keys`) — never roll your own request signing.
+- Tests against an emulator (LocalStack, etc.) in CI — **do not mock the KMS client**. Mock/prod divergence is exactly what bit SOPS in some integration paths.
+- Adds an integration test that does round-trip wrap/unwrap with a real DEK.
+
+## Commit hygiene
+
+Conventional Commits. The type drives the changelog grouping and (via `git-cliff`) the next version bump:
+
+```
+feat(cli):     add `kerf rotate --reason` flag
+fix(core):     preserve YAML quoting style across encrypt round-trip
+sec(kms):      pin aws-sdk-kms to version with latest CVE fixes
+docs(quickstart): clarify env-var precedence
+refactor(core): extract path canonicalization into its own module
+test(core):    add KAT for HMAC-SHA256 over canonical walk
+chore(deps):   bump age from 0.10 to 0.11
+ci(release):   add aarch64-linux to the build matrix
+```
+
+Use `sec:` for any security-relevant change, even tiny ones — it makes the audit trail searchable. Security-relevant commits also get a `Security-impact:` trailer describing what changed and why; reviewers grep for it.
+
+**Never squash security-relevant commits into "chore" or "refactor".** The git history is part of the audit story.
+
+## Releasing
+
+The release flow is automated:
+
+<Steps>
+
+1. **Confirm `main` is clean and up to date** with `origin/main`.
+
+2. **Preview the next version:**
+   ```bash
+   task bump:preview
+   # current:  0.1.0
+   # next:     0.2.0
+   ```
+
+3. **Cut the release:**
+   ```bash
+   task release                # auto-pick version from commits
+   task release -- 0.2.0       # pin a version
+   ```
+
+   This bumps `Cargo.toml`, regenerates `CHANGELOG.md`, commits, tags `v0.2.0`, and pushes.
+
+4. **Wait for CI.** The `release.yml` workflow fires on the tag, builds all 5 targets (linux x86_64/aarch64, macos arm64/x86_64, windows x86_64), generates checksums, and creates the GitHub Release with `git-cliff` notes.
+
+5. **Verify the release** at `https://github.com/idestis/kerf/releases/tag/v0.2.0`.
+
+</Steps>
+
+`task release` runs `task lint` and `task test` as preconditions. If either fails, no tag is pushed.
+
+## Things that look like improvements but aren't
+
+CLAUDE.md has the full list. The summary:
+
+- **Don't cache the unwrapped DEK on disk.** Defeats the point of KMS.
+- **Don't auto-rotate the DEK.** That's a user decision with operational consequences.
+- **Don't skip MAC verification "for speed."** The MAC check is what stops you from re-encrypting a tampered file and signing your name to it.
+- **Don't add a `--force` that re-encrypts everything.** That's `kerf rotate` — don't add a second path that bypasses rotation accounting.
+- **Don't use `rand::thread_rng()` for nonces or keys.** Ever. Use `aws_lc_rs::rand::SystemRandom` or `getrandom` directly.
+- **Don't add `unsafe` outside marked FFI shims in `kerf-kms`.** Any `unsafe` block requires a `SAFETY:` comment a reviewer can verify.
+
+## Reporting security issues
+
+See the [security policy](/kerf/contributing/security/). Do **not** open a public GitHub issue for vulnerabilities.

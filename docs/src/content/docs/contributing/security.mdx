@@ -1,0 +1,57 @@
+---
+title: Security policy
+description: Reporting vulnerabilities, supported versions, audit expectations.
+---
+
+## Reporting a vulnerability
+
+**Do not open a public GitHub issue for security vulnerabilities.**
+
+Use [GitHub's private vulnerability reporting](https://github.com/idestis/kerf/security/advisories/new) on the repo, or email the maintainer (address in [`Cargo.toml`](https://github.com/idestis/kerf/blob/main/Cargo.toml) `[workspace.package].authors`). Expect a response within 72 hours.
+
+When reporting, please include:
+
+- Affected version(s) and platform(s).
+- A minimal reproducer if possible.
+- Your assessment of severity and exploitability.
+- Whether you've already disclosed publicly (and if so, where).
+
+## Supported versions
+
+While kerf is pre-1.0, only the **latest minor release** receives security fixes. Once 1.0 lands, this policy will expand to cover the last two minor versions.
+
+## What we consider a vulnerability
+
+In scope:
+
+- **Confidentiality breaks.** Anything that exposes plaintext or DEK material without a valid recipient credential.
+- **Integrity bypasses.** MAC or AAD checks that can be defeated; ciphertext substitution attacks.
+- **Key-handling bugs.** Non-zeroized secret material; secrets in logs, panics, or error messages; nonce reuse under the same DEK.
+- **Supply-chain.** Compromised release artifacts, build reproducibility failures.
+
+Out of scope (covered in [SPEC § 3 threat model](https://github.com/idestis/kerf/blob/main/SPEC.md#3-threat-model)):
+
+- Compromise of the host running kerf (memory dumps, swap, hibernation files).
+- KMS provider compromise or collusion.
+- Attacks requiring physical access to an unlocked machine.
+
+## Audit expectations
+
+kerf has not been independently audited. Crypto choices follow the boring-but-correct path:
+
+- AES-256-GCM via [`aws-lc-rs`](https://github.com/aws/aws-lc-rs) (FIPS-validatable).
+- HMAC-SHA256 for the file MAC.
+- X25519 + ChaCha20-Poly1305 via the [`age`](https://crates.io/crates/age) crate for age recipients.
+- OS CSPRNG (`getrandom`) for all nonce and key material.
+
+Banned: anything from `openssl`, anything from `ring` directly, anything seeded with `rand::thread_rng`, anything with custom AEAD constructions. See [`CLAUDE.md`](https://github.com/idestis/kerf/blob/main/CLAUDE.md) for the full list.
+
+## Verifying releases
+
+All release archives ship with `SHA256SUMS` published in the same GitHub Release. Verify before installing:
+
+```bash
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Artifact signing via [cosign](https://github.com/sigstore/cosign) is planned for the 1.0 release.
