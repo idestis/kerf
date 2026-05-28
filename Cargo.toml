@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kerf-core",
+    "crates/kerf-kms",
+    "crates/kerf-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/idestis/kerf"
+homepage = "https://github.com/idestis/kerf"
+authors = ["Dmytro Shamenko <dmytro.shamenko@carmoola.co.uk>"]
+description = "Diff-aware, KMS-first encryption for structured secret files."
+readme = "README.md"
+keywords = ["secrets", "encryption", "kms", "sops", "age"]
+categories = ["command-line-utilities", "cryptography"]
+
+[workspace.dependencies]
+# Internal
+kerf-core = { path = "crates/kerf-core", version = "0.1.0" }
+kerf-kms  = { path = "crates/kerf-kms",  version = "0.1.0" }
+
+# Crypto — see SPEC § 5 and CLAUDE.md "Stack"
+aws-lc-rs = "1.13"
+age = "0.11"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+secrecy = "0.10"
+subtle = "2.6"
+getrandom = "0.2"
+
+# KMS clients (only used by kerf-kms)
+aws-sdk-kms = "1.61"
+google-cloud-kms = "0.7"
+azure_security_keyvault_keys = "0.4"
+tokio = { version = "1.43", features = ["macros", "rt-multi-thread"] }
+
+# Format parsing
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+toml = "0.8"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+anyhow = "1.0"
+
+# Library errors
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+# Crypto correctness > performance, but a security CLI should still be quick.
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+opt-level = 3
+
+[profile.dist]
+inherits = "release"
+# cargo-dist convention; safe no-op if cargo-dist isn't used.

@@ -1,0 +1,164 @@
+name: Release
+
+# Fires when `task release` pushes a v* tag. Builds the kerf binary for the
+# five target triples listed in SPEC § 10, packages each, computes
+# SHA-256 checksums, and creates the GitHub Release with git-cliff notes.
+#
+# The Homebrew tap (idestis/homebrew-kerf) is updated in a follow-up step
+# (not yet wired — see the README install section).
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to (re)build, e.g. v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: kerf
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross-compilation toolchain (linux aarch64)
+        if: matrix.cross == true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p .cargo
+          cat >> .cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} -p kerf-cli
+
+      - name: Package archive
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ -n "${{ github.event.inputs.tag || '' }}" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+            VERSION="${VERSION#v}"
+          fi
+          NAME="${BIN_NAME}-v${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/${NAME}"
+
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/${BIN_NAME}.exe" "dist/${NAME}/"
+            cp README.md LICENSE "dist/${NAME}/"
+            (cd dist && 7z a "${NAME}.zip" "${NAME}" >/dev/null)
+            ARTIFACT="dist/${NAME}.zip"
+          else
+            cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${NAME}/"
+            cp README.md LICENSE "dist/${NAME}/"
+            (cd dist && tar -czf "${NAME}.tar.gz" "${NAME}")
+            ARTIFACT="dist/${NAME}.tar.gz"
+          fi
+
+          # SHA-256 checksum
+          if command -v sha256sum >/dev/null; then
+            (cd dist && sha256sum "$(basename "$ARTIFACT")" > "$(basename "$ARTIFACT").sha256")
+          else
+            (cd dist && shasum -a 256 "$(basename "$ARTIFACT")" > "$(basename "$ARTIFACT").sha256")
+          fi
+
+          echo "artifact=${ARTIFACT}" >> "$GITHUB_OUTPUT"
+          echo "checksum=${ARTIFACT}.sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kerf-${{ matrix.target }}
+          path: |
+            ${{ steps.pkg.outputs.artifact }}
+            ${{ steps.pkg.outputs.checksum }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate release notes (git-cliff)
+        id: notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip all
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Aggregate checksums
+        run: |
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          ls -la
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ -n "${{ github.event.inputs.tag || '' }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file "${{ steps.notes.outputs.changelog || 'RELEASE_NOTES.md' }}" \
+            dist/*.tar.gz dist/*.zip dist/*.sha256 dist/SHA256SUMS

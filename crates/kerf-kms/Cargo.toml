@@ -1,0 +1,23 @@
+[package]
+name = "kerf-kms"
+description = "KMS recipient implementations for kerf (AWS, GCP, Azure, age)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+kerf-core = { workspace = true }
+thiserror = { workspace = true }
+# Real deps land when individual recipients are implemented; declared in
+# workspace.dependencies so they can be enabled here behind feature flags
+# without touching every Cargo.toml.
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

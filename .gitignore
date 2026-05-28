@@ -1,0 +1,24 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Fuzz artifacts
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+/fuzz/target
+
+# Local secrets — never commit
+*.kerf.yaml.dec
+.env
+.env.local
+
+# Release scratch
+/dist

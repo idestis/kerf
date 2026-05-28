@@ -1,0 +1,22 @@
+[package]
+name = "kerf-core"
+description = "Core format, crypto, and diff-aware encrypt algorithm for kerf. No I/O, no async."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# Pure logic — see CLAUDE.md "Layout": no async, no I/O, no clock, no env access.
+# Do not add tokio, std::fs, or chrono here.
+[dependencies]
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

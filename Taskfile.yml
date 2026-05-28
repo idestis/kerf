@@ -1,0 +1,198 @@
+version: '3'
+
+# Release automation for kerf.
+# Quick start:
+#   task test                 # cargo test --workspace
+#   task lint                 # fmt --check + clippy + deny
+#   task build                # release binary at target/release/kerf
+#   task release              # bump from commits, tag, push (CI builds binaries)
+#   task release -- 0.2.0     # same, but pin the version
+#
+# See `task --list` for the pieces.
+#
+# The release task only bumps version + writes CHANGELOG + pushes a tag.
+# The actual cross-platform binary builds and GitHub Release creation happen
+# in .github/workflows/release.yml, which fires on the v* tag push.
+
+vars:
+  CARGO_TOML: Cargo.toml
+  BIN_NAME: kerf
+
+tasks:
+  default:
+    desc: List available tasks.
+    cmds:
+      - task --list-all
+    silent: true
+
+  # ───── version ──────────────────────────────────────────────────────────
+
+  version:
+    desc: Print the current workspace version.
+    cmds:
+      - |
+        grep -m1 -E '^version = ' {{.CARGO_TOML}} | sed -E 's/version = "([^"]+)"/\1/'
+    silent: true
+
+  bump:preview:
+    desc: Print the next version that git-cliff would pick from recent commits.
+    cmds:
+      - |
+        NEXT=$(git cliff --bumped-version 2>/dev/null | sed 's/^v//')
+        CURRENT=$(grep -m1 -E '^version = ' {{.CARGO_TOML}} | sed -E 's/version = "([^"]+)"/\1/')
+        echo "current:  $CURRENT"
+        echo "next:     ${NEXT:-<none — no releasable commits since last tag>}"
+    silent: true
+
+  bump:
+    desc: 'Bump workspace version (auto from commits) and Cargo.lock. Usage: task bump or task bump -- 0.2.0'
+    vars:
+      VERSION:
+        sh: |
+          if [ -n "{{.CLI_ARGS}}" ]; then
+            printf '%s' "{{.CLI_ARGS}}"
+          else
+            git cliff --bumped-version 2>/dev/null | sed 's/^v//'
+          fi
+    preconditions:
+      - sh: printf '%s' "{{.VERSION}}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
+        msg: 'Could not determine next version from commits. Pass one explicitly: task bump -- <semver>.'
+    cmds:
+      - |
+        set -e
+        # Bump [workspace.package].version — the only version field; member
+        # crates inherit via version.workspace = true.
+        sed -i '' -E 's/^version = "[0-9]+\.[0-9]+\.[0-9]+"/version = "{{.VERSION}}"/' {{.CARGO_TOML}}
+        # Refresh Cargo.lock so the bump is reflected before commit.
+        cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace
+        echo "Bumped workspace version to {{.VERSION}}"
+
+  # ───── changelog ────────────────────────────────────────────────────────
+
+  changelog:
+    desc: Regenerate CHANGELOG.md from git history.
+    cmds:
+      - git cliff -o CHANGELOG.md
+
+  changelog:preview:
+    desc: Preview what the next release section will look like.
+    cmds:
+      - git cliff --unreleased --strip all
+
+  # ───── code quality ────────────────────────────────────────────────────
+
+  fmt:
+    desc: Format code with rustfmt.
+    cmds:
+      - cargo fmt --all
+
+  fmt:check:
+    desc: Verify formatting without modifying files.
+    cmds:
+      - cargo fmt --all -- --check
+
+  clippy:
+    desc: Run clippy with warnings as errors.
+    cmds:
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    desc: Run the workspace test suite.
+    cmds:
+      - cargo test --workspace
+
+  test:core:
+    desc: Fast core-only tests, optimized.
+    cmds:
+      - cargo test -p kerf-core --release
+
+  deny:
+    desc: 'Supply-chain audit (cargo-deny: advisories, licenses, bans, sources).'
+    cmds:
+      - cargo deny check
+
+  lint:
+    desc: Format check + clippy + cargo-deny.
+    cmds:
+      - task: fmt:check
+      - task: clippy
+      - task: deny
+
+  # ───── build ────────────────────────────────────────────────────────────
+
+  build:
+    desc: 'Build a release binary. Output at target/release/{{.BIN_NAME}}.'
+    cmds:
+      - cargo build --release -p kerf-cli
+
+  clean:
+    desc: Remove cargo target directory.
+    cmds:
+      - cargo clean
+
+  # ───── fuzz ────────────────────────────────────────────────────────────
+
+  fuzz:
+    desc: 'Run a fuzz target for 5 minutes. Usage: task fuzz -- envelope_parser'
+    preconditions:
+      - sh: command -v cargo-fuzz >/dev/null
+        msg: 'cargo-fuzz not installed. Run `cargo install cargo-fuzz`.'
+      - sh: test -n "{{.CLI_ARGS}}"
+        msg: 'Usage: task fuzz -- <target>'
+    cmds:
+      - cargo fuzz run {{.CLI_ARGS}} -- -max_total_time=300
+
+  # ───── release ──────────────────────────────────────────────────────────
+
+  release:
+    desc: 'Bump version, regenerate CHANGELOG, commit, tag, and push. CI builds the binaries.'
+    vars:
+      VERSION:
+        sh: |
+          if [ -n "{{.CLI_ARGS}}" ]; then
+            printf '%s' "{{.CLI_ARGS}}"
+          else
+            git cliff --bumped-version 2>/dev/null | sed 's/^v//'
+          fi
+    preconditions:
+      - sh: printf '%s' "{{.VERSION}}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
+        msg: 'Could not determine next version.'
+      - sh: test -z "$(git status --porcelain)"
+        msg: 'Working tree not clean. Commit or stash first.'
+      - sh: test "$(git rev-parse --abbrev-ref HEAD)" = 'main'
+        msg: 'Must be on main branch.'
+      - sh: |
+          git fetch --quiet origin main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+        msg: 'Local main is out of sync with origin/main.'
+      - sh: '! git rev-parse v{{.VERSION}} >/dev/null 2>&1'
+        msg: 'Tag v{{.VERSION}} already exists.'
+      - sh: gh auth status >/dev/null 2>&1
+        msg: 'Run `gh auth login` first.'
+    cmds:
+      - task: lint
+      - task: test
+      - task: bump
+        vars: { CLI_ARGS: '{{.VERSION}}' }
+      - git cliff --tag v{{.VERSION}} -o CHANGELOG.md
+      - git add {{.CARGO_TOML}} Cargo.lock CHANGELOG.md
+      - 'git commit -m "chore(release): v{{.VERSION}}"'
+      - git tag -a v{{.VERSION}} -m "v{{.VERSION}}"
+      - git push origin main
+      - git push origin v{{.VERSION}}
+      - echo "Pushed tag v{{.VERSION}}. CI will build binaries and publish the GitHub Release."
+
+  release:notes:
+    desc: 'Rebuild the GH release notes for an existing tag.'
+    vars:
+      VERSION: '{{.CLI_ARGS}}'
+    preconditions:
+      - sh: printf '%s' "{{.VERSION}}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'
+        msg: 'Usage: task release:notes -- <semver>'
+      - sh: git rev-parse v{{.VERSION}} >/dev/null 2>&1
+        msg: 'Tag v{{.VERSION}} not found.'
+    cmds:
+      - |
+        NOTES=$(git cliff --current --strip all)
+        gh release edit v{{.VERSION}} --notes "$NOTES" 2>/dev/null \
+          || gh release create v{{.VERSION}} --title "v{{.VERSION}}" --notes "$NOTES"

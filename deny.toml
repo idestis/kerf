@@ -1,0 +1,47 @@
+# cargo-deny configuration. https://embarkstudios.github.io/cargo-deny/
+#
+# kerf is a security tool — supply-chain hygiene is part of the contract.
+# Tighten this as the dep graph grows; right now it's the conservative baseline.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Apache-2.0 and MIT cover the realistic crate license set. Add more here
+# with justification only — broad allow-lists defeat the audit value.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Explicitly forbid OpenSSL — see CLAUDE.md "Crates explicitly NOT used".
+deny = [
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

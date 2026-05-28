@@ -1,0 +1,58 @@
+# git-cliff configuration for kerf
+# https://git-cliff.org/docs/configuration
+#
+# kerf is a security tool: the changelog is part of the audit story.
+# `sec:` commits get their own section (see CLAUDE.md "Commit hygiene").
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to kerf.
+Format roughly follows [Keep a Changelog](https://keepachangelog.com/).
+
+"""
+body = """
+{% if version -%}
+## [{{ version | trim_start_matches(pat="v") }}] — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## [Unreleased]
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") -%}
+### {{ group | upper_first }}
+
+{% for commit in commits -%}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }}
+{% endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = false
+filter_commits = false
+tag_pattern = "v[0-9].*"
+skip_tags = ""
+ignore_tags = ""
+sort_commits = "oldest"
+topo_order = false
+
+commit_parsers = [
+    { message = "^chore\\(release\\)", skip = true },
+    { message = "^sec",      group = "Security" },
+    { message = "^feat",     group = "Features" },
+    { message = "^fix",      group = "Bug Fixes" },
+    { message = "^perf",     group = "Performance" },
+    { message = "^refactor", group = "Refactor" },
+    { message = "^docs",     group = "Documentation" },
+    { message = "^style",    group = "Style" },
+    { message = "^test",     group = "Tests" },
+    { message = "^ci",       group = "CI" },
+    { message = "^build",    group = "Build" },
+    { message = "^chore",    group = "Chore" },
+    { message = "^revert",   group = "Reverts" },
+]

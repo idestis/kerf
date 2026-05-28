@@ -1,0 +1,26 @@
+[package]
+name = "kerf-cli"
+description = "kerf — diff-aware, KMS-first encryption for structured secret files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "kerf"
+path = "src/main.rs"
+
+[dependencies]
+kerf-core = { workspace = true }
+kerf-kms  = { workspace = true }
+clap      = { workspace = true }
+anyhow    = { workspace = true }
+thiserror = { workspace = true }
+tracing   = { workspace = true }
+tracing-subscriber = { workspace = true }
