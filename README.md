@@ -22,7 +22,7 @@ What's done and what's next. The full porcelain surface is implemented: `init`, 
 - [x] Diff-aware encrypt with the byte-identity rule
 - [x] File MAC (HMAC-SHA256, AES-GCM-wrapped, AAD `__kerf_mac__`)
 - [x] AES-256-GCM per value, AAD = dotted path
-- [ ] Fuzz targets for the file, envelope, and recipient-block parsers (`cargo-fuzz`)
+- [x] Fuzz targets for the file, envelope, and recipient-block parsers (`cargo-fuzz`)
 
 ### Formats
 - [x] YAML, JSON, TOML, ENV (dotenv)

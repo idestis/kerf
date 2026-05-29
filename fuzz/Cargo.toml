@@ -1,0 +1,50 @@
+# cargo-fuzz targets for kerf's parsers (SPEC § 11.4, CLAUDE.md "Testing").
+#
+# This is its own workspace (the empty [workspace] table below) so the main
+# `cargo test --workspace` never tries to build the libFuzzer harness, which
+# needs nightly + a sanitizer runtime. Run these explicitly:
+#
+#   cargo +nightly fuzz run envelope_parser -- -max_total_time=300
+#
+# Adding a new parser means adding a new target here (CLAUDE.md).
+
+[package]
+name = "kerf-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_yaml = "0.9"
+kerf-core = { path = "../crates/kerf-core" }
+
+# Detach from the parent workspace — cargo-fuzz convention.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "file_parser"
+path = "fuzz_targets/file_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "envelope_parser"
+path = "fuzz_targets/envelope_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recipient_block"
+path = "fuzz_targets/recipient_block.rs"
+test = false
+doc = false
+bench = false

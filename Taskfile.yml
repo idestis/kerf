@@ -109,6 +109,27 @@ tasks:
     cmds:
       - cargo test -p kerf-core --release
 
+  fuzz:build:
+    desc: 'Compile all cargo-fuzz targets (nightly). Cheap smoke test that the harnesses still link.'
+    cmds:
+      - cargo +nightly fuzz build
+    preconditions:
+      - sh: command -v cargo-fuzz >/dev/null
+        msg: 'cargo-fuzz not found. Install: rustup toolchain install nightly && cargo install cargo-fuzz'
+
+  fuzz:run:
+    desc: 'Run one fuzz target for 60s. Usage: task fuzz:run -- envelope_parser'
+    cmds:
+      - |
+        TARGET="{{.CLI_ARGS}}"
+        [ -n "$TARGET" ] || { echo "usage: task fuzz:run -- <target>  (file_parser | envelope_parser | recipient_block)"; exit 2; }
+        mkdir -p "fuzz/corpus/$TARGET"
+        [ -d "fuzz/seeds/$TARGET" ] && cp -n fuzz/seeds/$TARGET/* "fuzz/corpus/$TARGET/" 2>/dev/null || true
+        cargo +nightly fuzz run "$TARGET" -- -max_total_time=60
+    preconditions:
+      - sh: command -v cargo-fuzz >/dev/null
+        msg: 'cargo-fuzz not found. Install: rustup toolchain install nightly && cargo install cargo-fuzz'
+
   test:integration:
     desc: 'Batteries-included: spin up KMS emulators, run end-to-end tests, tear down.'
     # Endpoint + credential env vars are set for the whole task, so the

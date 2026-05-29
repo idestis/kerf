@@ -1,0 +1,5 @@
+db:
+  password: hunter2
+  port: 5432
+api:
+  enabled: true

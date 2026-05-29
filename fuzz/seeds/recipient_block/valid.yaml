@@ -1,0 +1,7 @@
+version: 1
+cipher: aes-256-gcm
+recipients:
+  - type: age
+    recipient: age1abc
+    encrypted_dek: AAAA
+encrypted_regex: "^(password|token|key|secret|credential)$"
