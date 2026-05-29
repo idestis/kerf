@@ -14,6 +14,44 @@ See [`SPEC.md`](SPEC.md) for the format and algorithm. See [`CLAUDE.md`](CLAUDE.
 
 Recipient backends are cargo features (`aws-kms` on by default; `gcp-kms`, `azure-kv` opt-in) so you only build the cloud SDKs you use.
 
+## Roadmap
+
+What's done and what's next. Implemented commands today: `encrypt`, `decrypt`, `keygen`.
+
+### Core / crypto
+- [x] Diff-aware encrypt with the byte-identity rule
+- [x] File MAC (HMAC-SHA256, AES-GCM-wrapped, AAD `__kerf_mac__`)
+- [x] AES-256-GCM per value, AAD = dotted path
+- [ ] Fuzz targets for the file, envelope, and recipient-block parsers (`cargo-fuzz`)
+
+### Formats
+- [x] YAML, JSON, TOML, ENV (dotenv)
+- [ ] Comment / whitespace preservation on round-trip (currently normalized)
+- [ ] INI
+
+### Recipients
+- [x] age (local, no network)
+- [x] AWS KMS — emulator-verified (floci)
+- [x] GCP Cloud KMS — emulator-verified (fake-cloud-kms)
+- [x] Azure Key Vault (RSA-OAEP-256 wrap/unwrap)
+- [ ] Verify Azure end-to-end against an emulator with the Keys API
+
+### CLI commands (porcelain still stubbed)
+- [ ] `kerf init` — write `.kerf.yaml` creation rules
+- [ ] `kerf verify` — MAC + AAD check, no plaintext output (exit codes per SPEC § 7.6)
+- [ ] `kerf rotate` — fresh DEK, re-encrypt every value, re-wrap
+- [ ] `kerf edit` — decrypt → `$EDITOR` → minimal-diff re-encrypt, in memory
+- [ ] `kerf exec -- <cmd>` — decrypt into child env, no plaintext on disk
+- [ ] `kerf set` / `kerf unset` — scripted single-value mutations (`--stdin`)
+- [ ] `kerf view` / `kerf diff` — read-only inspection
+- [ ] `kerf keys add` / `remove` / `list` — recipient management without DEK rotation
+- [ ] Plumbing commands (`recipients`, `metadata`, `mac --verify`, `path-encrypted`)
+
+### Migration & distribution
+- [ ] `kerf import-sops` — read SOPS-format files and re-encrypt into kerf format
+- [ ] Homebrew tap (`idestis/homebrew-kerf`)
+- [ ] Security audit before any 1.0 / "safe for real secrets" claim
+
 ## Install
 
 ### GitHub Releases
@@ -108,8 +146,11 @@ task test:integration
 Emulators used: [floci](https://github.com/floci-io/floci) for AWS on `:4566`
 (free, MIT, no auth token — unlike recent LocalStack, which gates KMS behind a
 paid license), and `fake-cloud-kms` for GCP on `:9010` (floci-gcp has no KMS;
-the image is amd64-only and runs under emulation on Apple Silicon). Azure is
-added once that backend lands.
+the image is amd64-only and runs under emulation on Apple Silicon). Azure's
+backend is implemented but not in the auto-managed stack yet — its Keys API
+isn't cleanly emulator-testable (floci-az confirms only Secrets; lowkey-vault
+needs TLS-trust config), so `tests/azure_kv_local.rs` is gated and documents
+manual setup.
 
 For a persistent / already-running setup, drive the pieces yourself:
 
