@@ -4,8 +4,8 @@ name: Release
 # five target triples listed in SPEC § 10, packages each, computes
 # SHA-256 checksums, and creates the GitHub Release with git-cliff notes.
 #
-# The Homebrew tap (idestis/homebrew-kerf) is updated in a follow-up step
-# (not yet wired — see the README install section).
+# Build-and-deliver only: signed/checksummed archives attached to the
+# GitHub Release. No package-manager publishing (no Homebrew tap).
 
 on:
   push:
@@ -74,7 +74,9 @@ jobs:
 
       - name: Build release binary
         shell: bash
-        run: cargo build --release --locked --target ${{ matrix.target }} -p kerf-cli
+        # --all-features so the delivered binary supports every recipient
+        # backend (age, AWS, GCP, Azure), not just the default aws-kms.
+        run: cargo build --release --locked --all-features --target ${{ matrix.target }} -p kerf-cli
 
       - name: Package archive
         id: pkg

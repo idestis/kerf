@@ -49,14 +49,13 @@ What's done and what's next. Implemented commands today: `encrypt`, `decrypt`, `
 
 ### Migration & distribution
 - [ ] `kerf import-sops` — read SOPS-format files and re-encrypt into kerf format
-- [ ] Homebrew tap (`idestis/homebrew-kerf`)
 - [ ] Security audit before any 1.0 / "safe for real secrets" claim
 
 ## Install
 
 ### GitHub Releases
 
-Download the signed binary for your platform from the [Releases](https://github.com/idestis/kerf/releases) page. Verify the checksum against `SHA256SUMS` published alongside the archives.
+Download the binary for your platform from the [Releases](https://github.com/idestis/kerf/releases) page. Verify the checksum against `SHA256SUMS` published alongside the archives.
 
 ```
 tar -xzf kerf-v0.1.0-aarch64-apple-darwin.tar.gz
@@ -71,15 +70,6 @@ Supported platforms:
 | Linux | x86_64, aarch64 |
 | macOS | arm64, x86_64 |
 | Windows | x86_64 |
-
-### Homebrew (planned)
-
-```
-brew tap idestis/kerf
-brew install kerf
-```
-
-Not yet published — the tap repository will be `idestis/homebrew-kerf`.
 
 ### From source
 
