@@ -47,14 +47,15 @@ pub(crate) fn resolve_format(
             "json" => Ok(FileFormat::Json),
             "toml" => Ok(FileFormat::Toml),
             "env" | "dotenv" => Ok(FileFormat::Env),
+            "ini" => Ok(FileFormat::Ini),
             other => Err(CliError::Usage(format!(
-                "--format {other:?} not supported (yaml, json, toml, env)"
+                "--format {other:?} not supported (yaml, json, toml, env, ini)"
             ))),
         };
     }
     FileFormat::detect(path).ok_or_else(|| {
         CliError::Usage(format!(
-            "could not detect format from {} (use --format yaml|json|toml|env)",
+            "could not detect format from {} (use --format yaml|json|toml|env|ini)",
             path.display()
         ))
     })

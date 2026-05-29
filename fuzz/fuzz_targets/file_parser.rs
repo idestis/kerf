@@ -13,4 +13,5 @@ fuzz_target!(|data: &[u8]| {
     let _ = FileFormat::Json.parse(data);
     let _ = FileFormat::Toml.parse(data);
     let _ = FileFormat::Env.parse(data);
+    let _ = FileFormat::Ini.parse(data);
 });

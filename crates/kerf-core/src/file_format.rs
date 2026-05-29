@@ -48,11 +48,23 @@ pub enum FileFormat {
     /// valid, ordinary dotenv file. Only flat string values are
     /// representable — nested structure is rejected on serialize.
     Env,
+    /// INI (`key = value` under `[section]` headers). One level of nesting:
+    /// `[db]` + `password = …` → `db.password`. Keys before any section are
+    /// top-level. `;` and `#` start comment lines; values are the verbatim
+    /// (trimmed) text after the first `=` — there is no inline-comment or
+    /// quote processing. Like dotenv, the nested `kerf:` block can't be
+    /// represented natively, so it's packed (base64 of the block as YAML)
+    /// into a reserved `[kerf]` section. Arrays and 2-level nesting are
+    /// rejected on serialize.
+    Ini,
 }
 
 /// Reserved dotenv key that carries the packed `kerf:` block. Chosen to be
 /// extremely unlikely to collide with a real env var.
 const ENV_METADATA_KEY: &str = "KERF_METADATA";
+
+/// Reserved INI key (inside the `[kerf]` section) carrying the packed block.
+const INI_METADATA_KEY: &str = "metadata";
 
 impl FileFormat {
     /// Detect from a file path. Returns `None` if the extension isn't
@@ -77,6 +89,7 @@ impl FileFormat {
             "yaml" | "yml" => Some(Self::Yaml),
             "json" => Some(Self::Json),
             "toml" => Some(Self::Toml),
+            "ini" => Some(Self::Ini),
             _ => None,
         }
     }
@@ -101,6 +114,11 @@ impl FileFormat {
                 let text = std::str::from_utf8(bytes)
                     .map_err(|e| Error::Envelope(format!("env is not valid UTF-8: {e}")))?;
                 parse_env(text)
+            }
+            Self::Ini => {
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|e| Error::Envelope(format!("ini is not valid UTF-8: {e}")))?;
+                parse_ini(text)
             }
         }
     }
@@ -128,6 +146,7 @@ impl FileFormat {
                     .map_err(|e| Error::Envelope(format!("toml serialize: {e}")))
             }
             Self::Env => serialize_env(tree),
+            Self::Ini => serialize_ini(tree),
         }
     }
 
@@ -148,6 +167,7 @@ impl FileFormat {
     pub fn serialize_preserving(self, original: &str, tree: &Value) -> Result<String> {
         match self {
             Self::Env => env_serialize_preserving(original, tree),
+            Self::Ini => ini_serialize_preserving(original, tree),
             Self::Toml => toml_serialize_preserving(original, tree),
             Self::Yaml => yaml_serialize_preserving(original, tree),
             // JSON has no comments; normalized output is already faithful.
@@ -163,6 +183,7 @@ impl FileFormat {
             Self::Json => "json",
             Self::Toml => "toml",
             Self::Env => "env",
+            Self::Ini => "ini",
         }
     }
 }
@@ -859,6 +880,279 @@ fn value_is_table_like(v: &Value) -> bool {
     }
 }
 
+// ──── INI ─────────────────────────────────────────────────────────────────
+//
+// A deliberately small, well-defined INI subset (no external crate, full
+// control over round-tripping — same philosophy as the dotenv support):
+//
+// - `[section]` headers introduce one level of nesting (`[db]` + `password`
+//   → `db.password`). Keys before any section are top-level.
+// - `key = value`; the value is the verbatim text after the first `=`,
+//   trimmed. No inline-comment or quote processing (kerf values are opaque
+//   base64-bearing envelopes; treating the RHS literally avoids corrupting
+//   values that contain `#`/`;`/`=`).
+// - `;` and `#` start whole-line comments.
+// - The nested `kerf:` block has no native INI representation (no arrays), so
+//   it is packed — base64 of the block as YAML — into a reserved `[kerf]`
+//   section under the `metadata` key.
+
+/// Parse INI text into the internal tree, reconstructing the `kerf` block from
+/// the packed `[kerf] metadata` if present.
+fn parse_ini(text: &str) -> Result<Value> {
+    let mut root = serde_yaml::Mapping::new();
+    let mut section: Option<String> = None;
+    let mut packed_metadata: Option<String> = None;
+
+    for (lineno, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[') {
+            let name = rest.strip_suffix(']').ok_or_else(|| {
+                Error::Envelope(format!(
+                    "ini line {}: unterminated section header {raw:?}",
+                    lineno + 1
+                ))
+            })?;
+            section = Some(name.trim().to_string());
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            Error::Envelope(format!(
+                "ini line {}: expected key=value, got {raw:?}",
+                lineno + 1
+            ))
+        })?;
+        let key = key.trim().to_string();
+        let value = value.trim().to_string();
+
+        match section.as_deref() {
+            // Inside the reserved [kerf] section: `metadata` is the packed
+            // block; any other key is treated as (illegal) user data so the
+            // shadow check rejects it on encrypt.
+            Some(s) if s == crate::kerf_block::RESERVED_KEY => {
+                if key == INI_METADATA_KEY {
+                    packed_metadata = Some(value);
+                } else {
+                    ini_insert(
+                        &mut root,
+                        Some(crate::kerf_block::RESERVED_KEY),
+                        &key,
+                        value,
+                    );
+                }
+            }
+            Some(s) => ini_insert(&mut root, Some(s), &key, value),
+            None => {
+                root.insert(Value::String(key), Value::String(value));
+            }
+        }
+    }
+
+    let mut tree = Value::Mapping(root);
+    if let Some(packed) = packed_metadata {
+        let yaml_bytes = B64
+            .decode(packed.as_bytes())
+            .map_err(|e| Error::KerfBlock(format!("[kerf] metadata base64: {e}")))?;
+        let block: Value = serde_yaml::from_slice(&yaml_bytes)
+            .map_err(|e| Error::KerfBlock(format!("[kerf] metadata yaml: {e}")))?;
+        if let Value::Mapping(m) = &mut tree {
+            // Overwrite any partial kerf mapping with the decoded block.
+            m.insert(Value::String(crate::kerf_block::RESERVED_KEY.into()), block);
+        }
+    }
+    Ok(tree)
+}
+
+/// Insert `key = value` into `root` under `section` (or at the top level),
+/// creating the section mapping if needed.
+fn ini_insert(root: &mut serde_yaml::Mapping, section: Option<&str>, key: &str, value: String) {
+    let Some(section) = section else {
+        root.insert(Value::String(key.to_string()), Value::String(value));
+        return;
+    };
+    let sec_key = Value::String(section.to_string());
+    if !root.contains_key(&sec_key) {
+        root.insert(sec_key.clone(), Value::Mapping(serde_yaml::Mapping::new()));
+    }
+    if let Some(Value::Mapping(m)) = root.get_mut(&sec_key) {
+        m.insert(Value::String(key.to_string()), Value::String(value));
+    }
+}
+
+/// Normalized INI serializer (used as the no-original / fallback path). Emits
+/// top-level scalars first, then `[section]` tables, then the packed `[kerf]`
+/// section. Errors on arrays or 2-level nesting (INI can't represent them).
+fn serialize_ini(tree: &Value) -> Result<String> {
+    let Value::Mapping(map) = tree else {
+        return Err(Error::KerfBlock("ini root must be a mapping".into()));
+    };
+    let mut out = String::new();
+    let mut sections: Vec<(&str, &serde_yaml::Mapping)> = Vec::new();
+    let mut packed_metadata: Option<String> = None;
+
+    // Top-level scalars first (INI requires sectionless keys before sections).
+    for (k, v) in map {
+        let Value::String(key) = k else {
+            return Err(Error::KerfBlock("ini keys must be strings".into()));
+        };
+        if key == crate::kerf_block::RESERVED_KEY {
+            packed_metadata = Some(B64.encode(serde_yaml::to_string(v)?.as_bytes()));
+            continue;
+        }
+        match v {
+            Value::Mapping(sub) => sections.push((key, sub)),
+            Value::Sequence(_) | Value::Tagged(_) => {
+                return Err(Error::KerfBlock(format!(
+                    "ini cannot represent the array/tagged value at {key:?}"
+                )))
+            }
+            scalar => writeln!(out, "{key} = {}", ini_scalar(scalar)?).expect("write to String"),
+        }
+    }
+
+    for (name, sub) in sections {
+        writeln!(out, "\n[{name}]").expect("write to String");
+        for (k, v) in sub {
+            let Value::String(key) = k else {
+                return Err(Error::KerfBlock("ini keys must be strings".into()));
+            };
+            match v {
+                Value::Mapping(_) | Value::Sequence(_) | Value::Tagged(_) => {
+                    return Err(Error::KerfBlock(format!(
+                        "ini is one level deep: value at [{name}] {key:?} is not a scalar"
+                    )))
+                }
+                scalar => {
+                    writeln!(out, "{key} = {}", ini_scalar(scalar)?).expect("write to String");
+                }
+            }
+        }
+    }
+
+    if let Some(meta) = packed_metadata {
+        writeln!(out, "\n[{}]", crate::kerf_block::RESERVED_KEY).expect("write to String");
+        writeln!(out, "{INI_METADATA_KEY} = {meta}").expect("write to String");
+    }
+    Ok(out)
+}
+
+/// Render a scalar to its raw INI value text.
+fn ini_scalar(v: &Value) -> Result<String> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        Value::Bool(b) => Ok(b.to_string()),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Null => Ok(String::new()),
+        Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => {
+            Err(Error::KerfBlock("ini value is not a scalar".into()))
+        }
+    }
+}
+
+/// Comment/whitespace-preserving INI serializer (SPEC § 11.1). Walks the
+/// original line by line, keeping comments, blank lines, and section headers
+/// verbatim and rewriting only changed values. The reserved `[kerf]` section
+/// (always last) is replaced wholesale or dropped. A structural change
+/// (added/removed key) or a non-round-tripping splice falls back to
+/// [`serialize_ini`].
+fn ini_serialize_preserving(original: &str, tree: &Value) -> Result<String> {
+    if let Some(candidate) = ini_splice(original, tree) {
+        if let Ok(reparsed) = parse_ini(&candidate) {
+            if &reparsed == tree {
+                return Ok(candidate);
+            }
+        }
+    }
+    serialize_ini(tree)
+}
+
+/// Attempt the INI splice; `None` means "fall back to normalized".
+fn ini_splice(original: &str, tree: &Value) -> Option<String> {
+    let Value::Mapping(root) = tree else {
+        return None;
+    };
+    let tree_has_kerf = root
+        .iter()
+        .any(|(k, _)| matches!(k, Value::String(s) if s == crate::kerf_block::RESERVED_KEY));
+
+    // Desired data leaves (path -> scalar), excluding the kerf subtree.
+    let mut desired: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    for (k, v) in root {
+        if matches!(k, Value::String(s) if s == crate::kerf_block::RESERVED_KEY) {
+            continue;
+        }
+        let Value::String(key) = k else { return None };
+        yaml_collect_leaves(v, key, &mut desired);
+    }
+
+    let mut out = String::new();
+    let mut section: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
+
+    for raw in original.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            out.push_str(raw);
+            out.push('\n');
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('[') {
+            let name = rest.strip_suffix(']')?.trim();
+            // The reserved [kerf] section is always last; stop and re-emit it.
+            if name == crate::kerf_block::RESERVED_KEY {
+                break;
+            }
+            section = Some(name.to_string());
+            out.push_str(raw);
+            out.push('\n');
+            continue;
+        }
+        let (key, value) = line.split_once('=')?;
+        let key = key.trim();
+        let path = match &section {
+            Some(s) => format!("{s}.{key}"),
+            None => key.to_string(),
+        };
+        // A key not in the tree means a removal (e.g. unset) → fall back so we
+        // don't have to reason about section-aware deletion.
+        let scalar = ini_scalar(desired.get(&path)?).ok()?;
+        if value.trim() == scalar {
+            out.push_str(raw);
+            out.push('\n');
+        } else {
+            writeln!(out, "{key} = {scalar}").ok()?;
+        }
+        seen.insert(path);
+    }
+
+    // Additions (a desired key not present in the original) → fall back.
+    if seen.len() != desired.len() {
+        return None;
+    }
+
+    // Normalize the trailing newlines to exactly one so the blank separator
+    // before [kerf] doesn't accumulate across re-encrypts (and decrypt output
+    // doesn't keep growing trailing blanks).
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    out.push('\n');
+
+    if tree_has_kerf {
+        let kerf_value = root
+            .iter()
+            .find(|(k, _)| matches!(k, Value::String(s) if s == crate::kerf_block::RESERVED_KEY))
+            .map(|(_, v)| v)?;
+        let packed = B64.encode(serde_yaml::to_string(kerf_value).ok()?.as_bytes());
+        // One blank line separates the data from the reserved section.
+        writeln!(out, "\n[{}]", crate::kerf_block::RESERVED_KEY).ok()?;
+        writeln!(out, "{INI_METADATA_KEY} = {packed}").ok()?;
+    }
+    Some(out)
+}
+
 // ──── dotenv ─────────────────────────────────────────────────────────────
 //
 // Minimal, well-defined dotenv subset (no external crate, full control over
@@ -1398,6 +1692,99 @@ mod tests {
             "ENC[AES-GCM,n:x,c:y,t:z]"
         );
         assert_eq!(reparsed["kerf"], Value::Mapping(block));
+    }
+
+    #[test]
+    fn detect_ini() {
+        assert_eq!(
+            FileFormat::detect(Path::new("app.ini")),
+            Some(FileFormat::Ini)
+        );
+        assert_eq!(
+            FileFormat::detect(Path::new("app.kerf.ini")),
+            Some(FileFormat::Ini)
+        );
+    }
+
+    #[test]
+    fn ini_parse_sections_and_top_level() {
+        let text = "title = my app\n; comment\n[db]\nhost = db.local\npassword = hunter2\n";
+        let tree = FileFormat::Ini.parse(text.as_bytes()).unwrap();
+        assert_eq!(tree["title"].as_str().unwrap(), "my app");
+        assert_eq!(tree["db"]["host"].as_str().unwrap(), "db.local");
+        assert_eq!(tree["db"]["password"].as_str().unwrap(), "hunter2");
+    }
+
+    #[test]
+    fn ini_roundtrip_via_serialize() {
+        let text = "title = app\n[db]\nhost = db.local\n";
+        let tree = FileFormat::Ini.parse(text.as_bytes()).unwrap();
+        let back = FileFormat::Ini.serialize(&tree).unwrap();
+        let reparsed = FileFormat::Ini.parse(back.as_bytes()).unwrap();
+        assert_eq!(reparsed, tree);
+    }
+
+    #[test]
+    fn ini_metadata_packing_roundtrip() {
+        // A tree with a kerf block packs into [kerf] metadata and back.
+        let mut block = serde_yaml::Mapping::new();
+        block.insert(Value::String("version".into()), Value::Number(1.into()));
+        block.insert(
+            Value::String("cipher".into()),
+            Value::String("aes-256-gcm".into()),
+        );
+        let mut db = serde_yaml::Mapping::new();
+        db.insert(
+            Value::String("password".into()),
+            Value::String("ENC[AES-GCM,n:x,c:y,t:z]".into()),
+        );
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(Value::String("db".into()), Value::Mapping(db));
+        map.insert(Value::String("kerf".into()), Value::Mapping(block.clone()));
+        let tree = Value::Mapping(map);
+
+        let out = FileFormat::Ini.serialize(&tree).unwrap();
+        assert!(out.contains("[kerf]"), "{out}");
+        assert!(out.contains("metadata = "), "{out}");
+        let reparsed = FileFormat::Ini.parse(out.as_bytes()).unwrap();
+        assert_eq!(reparsed["kerf"], Value::Mapping(block));
+        assert_eq!(
+            reparsed["db"]["password"].as_str().unwrap(),
+            "ENC[AES-GCM,n:x,c:y,t:z]"
+        );
+    }
+
+    #[test]
+    fn ini_preserving_keeps_comments_and_changes_only_secret() {
+        let original = "; header\ntitle = my app\n\n[db]\nhost = db.local\npassword = hunter2\n";
+        let tree: Value = serde_yaml::from_str(
+            "title: my app\ndb:\n  host: db.local\n  password: ENC[AES-GCM,n:x,c:y,t:z]\nkerf:\n  version: 1\n  cipher: aes-256-gcm\n",
+        )
+        .unwrap();
+        let out = FileFormat::Ini
+            .serialize_preserving(original, &tree)
+            .unwrap();
+        assert!(out.contains("; header"), "{out}");
+        assert!(out.contains("[db]"), "{out}");
+        assert!(out.contains("host = db.local"), "{out}");
+        assert!(out.contains("ENC[AES-GCM,n:x,c:y,t:z]"), "{out}");
+        assert!(!out.contains("hunter2"), "old secret gone:\n{out}");
+        assert!(out.contains("[kerf]"), "{out}");
+        assert_eq!(FileFormat::Ini.parse(out.as_bytes()).unwrap(), tree);
+    }
+
+    #[test]
+    fn ini_preserving_decrypt_removes_kerf_and_restores_value() {
+        let original =
+            "; keep\n[db]\npassword = ENC[AES-GCM,n:x,c:y,t:z]\n\n[kerf]\nmetadata = abc123\n";
+        let tree: Value = serde_yaml::from_str("db:\n  password: plaintext\n").unwrap();
+        let out = FileFormat::Ini
+            .serialize_preserving(original, &tree)
+            .unwrap();
+        assert!(out.contains("; keep"), "{out}");
+        assert!(out.contains("password = plaintext"), "{out}");
+        assert!(!out.contains("[kerf]"), "kerf section removed:\n{out}");
+        assert_eq!(FileFormat::Ini.parse(out.as_bytes()).unwrap(), tree);
     }
 
     #[test]

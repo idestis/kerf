@@ -2,7 +2,7 @@
 
 > Diff-aware, KMS-first encryption for structured secret files.
 
-A kerf is the narrow cut a saw makes through wood — only the material along the blade's path is removed, the rest is untouched. `kerf` encrypts the same way: edit one value in a YAML/JSON/TOML/ENV file, and only that value's ciphertext changes in git.
+A kerf is the narrow cut a saw makes through wood — only the material along the blade's path is removed, the rest is untouched. `kerf` encrypts the same way: edit one value in a YAML/JSON/TOML/ENV/INI file, and only that value's ciphertext changes in git.
 
 Tools like SOPS reroll every nonce on every encrypt, so changing one secret produces a diff that touches every encrypted line. That makes code review of secret changes effectively impossible. `kerf` fixes this with a single invariant: **if a value's plaintext is unchanged, its on-disk ciphertext, nonce, and authentication tag are byte-identical to the previous version.**
 
@@ -10,7 +10,7 @@ See [`SPEC.md`](SPEC.md) for the format and algorithm. See [`CLAUDE.md`](CLAUDE.
 
 ## Status
 
-**v0.1.0 — pre-alpha.** Working end-to-end: diff-aware encrypt/decrypt with the byte-identity rule, file MAC, four formats (YAML / JSON / TOML / ENV), and recipients for **age**, **AWS KMS**, **GCP Cloud KMS**, and **Azure Key Vault**. AWS and GCP are verified against local emulators; Azure's production path follows the documented SDK usage but isn't emulator-verified yet (see [Testing](#testing)). Not yet audited — don't protect real secrets with it until it stabilises.
+**v0.1.0 — pre-alpha.** Working end-to-end: diff-aware encrypt/decrypt with the byte-identity rule, file MAC, five formats (YAML / JSON / TOML / ENV / INI), and recipients for **age**, **AWS KMS**, **GCP Cloud KMS**, and **Azure Key Vault**. AWS and GCP are verified against local emulators; Azure's production path follows the documented SDK usage but isn't emulator-verified yet (see [Testing](#testing)). Not yet audited — don't protect real secrets with it until it stabilises.
 
 Recipient backends are cargo features (`aws-kms` on by default; `gcp-kms`, `azure-kv` opt-in) so you only build the cloud SDKs you use.
 
@@ -26,8 +26,8 @@ What's done and what's next. The full porcelain surface is implemented: `init`, 
 
 ### Formats
 - [x] YAML, JSON, TOML, ENV (dotenv)
-- [x] Comment / whitespace preservation on round-trip (YAML, TOML, ENV; JSON has no comments)
-- [ ] INI
+- [x] Comment / whitespace preservation on round-trip (YAML, TOML, ENV, INI; JSON has no comments)
+- [x] INI
 
 ### Recipients
 - [x] age (local, no network)
