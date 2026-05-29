@@ -37,7 +37,7 @@ aws-sdk-kms = "1.61"
 # `google-cloud-kms` was renamed to `gcloud-kms` at its 1.x line; the old
 # name stalled at 0.6. We track the maintained crate.
 gcloud-kms = "1.5"
-azure_security_keyvault_keys = "0.4"
+azure_security_keyvault_keys = "1.0"
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread"] }
 
 # Format parsing

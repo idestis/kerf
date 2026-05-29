@@ -56,7 +56,8 @@ pub struct RecipientFlags {
     #[arg(long = "gcp-kms", value_name = "ID")]
     pub gcp_kms: Vec<String>,
 
-    /// Azure Key Vault key URL. May be repeated. Not yet implemented in v0.1.
+    /// Azure Key Vault key URL (`https://<vault>/keys/<name>[/<version>]`).
+    /// May be repeated.
     #[arg(long = "azure-kv", value_name = "URL")]
     pub azure_kv: Vec<String>,
 }

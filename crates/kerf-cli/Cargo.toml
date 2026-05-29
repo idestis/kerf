@@ -20,6 +20,7 @@ path = "src/main.rs"
 default = ["aws-kms"]
 aws-kms = ["kerf-kms/aws-kms"]
 gcp-kms = ["kerf-kms/gcp-kms"]
+azure-kv = ["kerf-kms/azure-kv"]
 
 [dependencies]
 kerf-core  = { workspace = true }

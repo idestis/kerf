@@ -1,11 +1,20 @@
 //! `kerf-kms` — recipient implementations for kerf.
 //!
-//! v0.1 ships only the `age` recipient, which is local-only (no network).
-//! AWS, GCP, and Azure KMS recipients are stubbed pending the integration-
-//! test harness (`LocalStack` + emulators) called for in CLAUDE.md.
+//! Backends (each behind a cargo feature so unused SDKs aren't built):
+//!
+//! - **age** (always on) — local, no network.
+//! - **`aws-kms`** (default) — AWS KMS Encrypt/Decrypt. Emulator-verified
+//!   (floci / `LocalStack`).
+//! - **`gcp-kms`** — GCP Cloud KMS Encrypt/Decrypt. Emulator-verified
+//!   (fake-cloud-kms).
+//! - **`azure-kv`** — Azure Key Vault Wrap/Unwrap Key (RSA-OAEP-256).
+//!   Production path follows the documented SDK usage; emulator verification
+//!   is pending (see `azure` module docs).
 //!
 //! Why this lives in its own crate: it's the only place async appears.
-//! Keeping `kerf-core` sync makes the crypto easy to fuzz and test.
+//! Keeping `kerf-core` sync makes the crypto easy to fuzz and test. Each
+//! KMS backend adapts its async SDK to the sync `Recipient`/`Identity`
+//! traits via a lazily-built shared tokio runtime.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -13,6 +22,8 @@
 pub mod age;
 #[cfg(feature = "aws-kms")]
 pub mod aws;
+#[cfg(feature = "azure-kv")]
+pub mod azure;
 mod error;
 #[cfg(feature = "gcp-kms")]
 pub mod gcp;

@@ -169,6 +169,11 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
                 let wrapped = recipient.wrap(&dek)?;
                 fresh.push(recipient.entry(&wrapped));
             }
+            #[cfg(feature = "azure-kv")]
+            for recipient in &resolved.azure_kv {
+                let wrapped = recipient.wrap(&dek)?;
+                fresh.push(recipient.entry(&wrapped));
+            }
             fresh
         }
     };
@@ -282,17 +287,14 @@ fn recipients_match(existing: &[RecipientEntry], resolved: &ResolvedRecipients) 
     let mut existing_age: Vec<&str> = Vec::new();
     let mut existing_aws: Vec<&str> = Vec::new();
     let mut existing_gcp: Vec<&str> = Vec::new();
-    let mut existing_other: usize = 0;
+    let mut existing_azure: Vec<&str> = Vec::new();
     for entry in existing {
         match entry {
             RecipientEntry::Age { recipient, .. } => existing_age.push(recipient),
             RecipientEntry::AwsKms { arn, .. } => existing_aws.push(arn),
             RecipientEntry::GcpKms { resource_id, .. } => existing_gcp.push(resource_id),
-            _ => existing_other += 1,
+            RecipientEntry::AzureKv { key_id, .. } => existing_azure.push(key_id),
         }
-    }
-    if existing_other != 0 {
-        return false;
     }
     let proposed_age: Vec<&str> = resolved
         .age
@@ -321,11 +323,46 @@ fn recipients_match(existing: &[RecipientEntry], resolved: &ResolvedRecipients) 
         .collect();
     #[cfg(not(feature = "gcp-kms"))]
     let proposed_gcp: Vec<&str> = Vec::new();
-    same_set(&existing_gcp, &proposed_gcp)
+    if !same_set(&existing_gcp, &proposed_gcp) {
+        return false;
+    }
+
+    // Azure: the stored key_id is versioned (`.../keys/name/version`) but the
+    // user's --azure-kv URL may be unversioned, so compare on the unversioned
+    // `.../keys/name` prefix. Matching means we copy the existing entry (and
+    // its wrapped DEK) verbatim, preserving byte-identity.
+    #[cfg(feature = "azure-kv")]
+    let proposed_azure: Vec<String> = resolved
+        .azure_kv
+        .iter()
+        .map(|r| azure_key_base(r.key_url()))
+        .collect();
+    #[cfg(not(feature = "azure-kv"))]
+    let proposed_azure: Vec<String> = Vec::new();
+    let existing_azure_base: Vec<String> =
+        existing_azure.iter().map(|k| azure_key_base(k)).collect();
+    same_set_owned(&existing_azure_base, &proposed_azure)
 }
 
 fn same_set(a: &[&str], b: &[&str]) -> bool {
     a.len() == b.len() && a.iter().all(|x| b.contains(x)) && b.iter().all(|x| a.contains(x))
+}
+
+fn same_set_owned(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().all(|x| b.contains(x)) && b.iter().all(|x| a.contains(x))
+}
+
+/// Normalize an Azure key URL to its unversioned `.../keys/<name>` form so a
+/// versioned stored kid and an unversioned supplied URL compare equal.
+fn azure_key_base(url: &str) -> String {
+    match url.find("/keys/") {
+        Some(idx) => {
+            let rest = &url[idx + "/keys/".len()..];
+            let name = rest.split('/').next().unwrap_or(rest);
+            format!("{}/keys/{name}", &url[..idx])
+        }
+        None => url.to_string(),
+    }
 }
 
 /// Try every available identity against the recipient list. Returns the
@@ -357,6 +394,15 @@ fn unwrap_any(recipients: &[RecipientEntry], identity: &ResolvedIdentity) -> Res
                 match gcp.unwrap(entry) {
                     Ok(dek) => return Ok(dek),
                     Err(e) => last_error = Some(format!("gcp unwrap: {e}")),
+                }
+            }
+        }
+        #[cfg(feature = "azure-kv")]
+        if let Some(azure) = &identity.azure_kv {
+            if azure.can_unwrap(entry) {
+                match azure.unwrap(entry) {
+                    Ok(dek) => return Ok(dek),
+                    Err(e) => last_error = Some(format!("azure unwrap: {e}")),
                 }
             }
         }

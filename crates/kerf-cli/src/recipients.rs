@@ -16,6 +16,8 @@ use std::path::PathBuf;
 use kerf_kms::age::{AgeIdentity, AgeRecipient};
 #[cfg(feature = "aws-kms")]
 use kerf_kms::aws::{AwsKmsIdentity, AwsKmsRecipient};
+#[cfg(feature = "azure-kv")]
+use kerf_kms::azure::{AzureKvIdentity, AzureKvRecipient};
 #[cfg(feature = "gcp-kms")]
 use kerf_kms::gcp::{GcpKmsIdentity, GcpKmsRecipient};
 
@@ -32,6 +34,9 @@ pub struct ResolvedRecipients {
     /// GCP Cloud KMS recipients (one per --gcp-kms resource id).
     #[cfg(feature = "gcp-kms")]
     pub gcp_kms: Vec<GcpKmsRecipient>,
+    /// Azure Key Vault recipients (one per --azure-kv key URL).
+    #[cfg(feature = "azure-kv")]
+    pub azure_kv: Vec<AzureKvRecipient>,
     /// Other backends still pending implementation. Surfaced so the CLI
     /// can hard-error on use rather than silently dropping the flag.
     pub unsupported: Vec<UnsupportedRecipient>,
@@ -92,6 +97,23 @@ impl ResolvedRecipients {
         #[cfg(not(feature = "gcp-kms"))]
         let gcp_kms_specs = gcp_specs.clone();
 
+        #[cfg(feature = "azure-kv")]
+        let azure_kv = {
+            let mut out = Vec::with_capacity(azure_specs.len());
+            for spec in &azure_specs {
+                out.push(AzureKvRecipient::parse(spec).map_err(|e| {
+                    CliError::Usage(format!("invalid Azure Key Vault recipient {spec:?}: {e}"))
+                })?);
+            }
+            out
+        };
+        #[cfg(not(feature = "azure-kv"))]
+        let azure_kv_specs = azure_specs.clone();
+
+        // `mut` is used only when a KMS feature is disabled (the cfg'd loops
+        // below push unsupported specs); the allow keeps the all-features
+        // build warning-free.
+        #[allow(unused_mut)]
         let mut unsupported = Vec::new();
         #[cfg(not(feature = "aws-kms"))]
         for spec in aws_kms_specs {
@@ -107,7 +129,8 @@ impl ResolvedRecipients {
                 spec,
             });
         }
-        for spec in azure_specs {
+        #[cfg(not(feature = "azure-kv"))]
+        for spec in azure_kv_specs {
             unsupported.push(UnsupportedRecipient {
                 kind: "azure-kv",
                 spec,
@@ -126,6 +149,10 @@ impl ResolvedRecipients {
         {
             any_real = any_real || !gcp_kms.is_empty();
         }
+        #[cfg(feature = "azure-kv")]
+        {
+            any_real = any_real || !azure_kv.is_empty();
+        }
 
         if !any_real && unsupported.is_empty() {
             return Err(CliError::NoRecipient(
@@ -142,6 +169,8 @@ impl ResolvedRecipients {
             aws_kms,
             #[cfg(feature = "gcp-kms")]
             gcp_kms,
+            #[cfg(feature = "azure-kv")]
+            azure_kv,
             unsupported,
         })
     }
@@ -156,6 +185,8 @@ pub struct ResolvedIdentity {
     pub aws_kms: Option<AwsKmsIdentity>,
     #[cfg(feature = "gcp-kms")]
     pub gcp_kms: Option<GcpKmsIdentity>,
+    #[cfg(feature = "azure-kv")]
+    pub azure_kv: Option<AzureKvIdentity>,
 }
 
 impl ResolvedIdentity {
@@ -171,12 +202,16 @@ impl ResolvedIdentity {
         let aws_kms = resolve_aws_identity();
         #[cfg(feature = "gcp-kms")]
         let gcp_kms = resolve_gcp_identity();
+        #[cfg(feature = "azure-kv")]
+        let azure_kv = Some(AzureKvIdentity::new());
         Ok(Self {
             age,
             #[cfg(feature = "aws-kms")]
             aws_kms,
             #[cfg(feature = "gcp-kms")]
             gcp_kms,
+            #[cfg(feature = "azure-kv")]
+            azure_kv,
         })
     }
 }

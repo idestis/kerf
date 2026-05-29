@@ -10,7 +10,9 @@ See [`SPEC.md`](SPEC.md) for the format and algorithm. See [`CLAUDE.md`](CLAUDE.
 
 ## Status
 
-**v0.1.0 — pre-alpha.** The CLI surface is stubbed; the diff-aware encrypt algorithm, KMS recipients, and file format are still being implemented. Do not use to protect real secrets yet.
+**v0.1.0 — pre-alpha.** Working end-to-end: diff-aware encrypt/decrypt with the byte-identity rule, file MAC, four formats (YAML / JSON / TOML / ENV), and recipients for **age**, **AWS KMS**, **GCP Cloud KMS**, and **Azure Key Vault**. AWS and GCP are verified against local emulators; Azure's production path follows the documented SDK usage but isn't emulator-verified yet (see [Testing](#testing)). Not yet audited — don't protect real secrets with it until it stabilises.
+
+Recipient backends are cargo features (`aws-kms` on by default; `gcp-kms`, `azure-kv` opt-in) so you only build the cloud SDKs you use.
 
 ## Install
 
