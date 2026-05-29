@@ -52,7 +52,7 @@ pub struct RecipientFlags {
     #[arg(long = "kms", value_name = "ARN")]
     pub kms: Vec<String>,
 
-    /// GCP KMS resource ID. May be repeated. Not yet implemented in v0.1.
+    /// GCP Cloud KMS crypto-key resource id. May be repeated.
     #[arg(long = "gcp-kms", value_name = "ID")]
     pub gcp_kms: Vec<String>,
 

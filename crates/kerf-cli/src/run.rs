@@ -166,6 +166,11 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
                 let wrapped = recipient.wrap(&dek)?;
                 fresh.push(recipient.entry(&wrapped));
             }
+            #[cfg(feature = "gcp-kms")]
+            for recipient in &resolved.gcp_kms {
+                let wrapped = recipient.wrap(&dek)?;
+                fresh.push(recipient.entry(&wrapped));
+            }
             fresh
         }
     };
@@ -173,7 +178,7 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
         let kinds: Vec<&str> = resolved.unsupported.iter().map(|u| u.kind).collect();
         return Err(CliError::Other(format!(
             "recipients {kinds:?} are accepted at the CLI but not yet implemented \
-             — v0.1 supports --age and --kms"
+             — built-in support covers --age, --kms, and --gcp-kms"
         )));
     }
 
@@ -274,11 +279,13 @@ fn try_unwrap_for_diff(
 fn recipients_match(existing: &[RecipientEntry], resolved: &ResolvedRecipients) -> bool {
     let mut existing_age: Vec<&str> = Vec::new();
     let mut existing_aws: Vec<&str> = Vec::new();
+    let mut existing_gcp: Vec<&str> = Vec::new();
     let mut existing_other: usize = 0;
     for entry in existing {
         match entry {
             RecipientEntry::Age { recipient, .. } => existing_age.push(recipient),
             RecipientEntry::AwsKms { arn, .. } => existing_aws.push(arn),
+            RecipientEntry::GcpKms { resource_id, .. } => existing_gcp.push(resource_id),
             _ => existing_other += 1,
         }
     }
@@ -290,23 +297,25 @@ fn recipients_match(existing: &[RecipientEntry], resolved: &ResolvedRecipients) 
         return false;
     }
     #[cfg(feature = "aws-kms")]
-    {
-        let proposed_aws: Vec<&str> = resolved
-            .aws_kms
-            .iter()
-            .map(kerf_kms::aws::AwsKmsRecipient::arn)
-            .collect();
-        if !same_set(&existing_aws, &proposed_aws) {
-            return false;
-        }
-    }
+    let proposed_aws: Vec<&str> = resolved
+        .aws_kms
+        .iter()
+        .map(kerf_kms::aws::AwsKmsRecipient::arn)
+        .collect();
     #[cfg(not(feature = "aws-kms"))]
-    {
-        if !existing_aws.is_empty() {
-            return false;
-        }
+    let proposed_aws: Vec<&str> = Vec::new();
+    if !same_set(&existing_aws, &proposed_aws) {
+        return false;
     }
-    true
+    #[cfg(feature = "gcp-kms")]
+    let proposed_gcp: Vec<&str> = resolved
+        .gcp_kms
+        .iter()
+        .map(kerf_kms::gcp::GcpKmsRecipient::resource_id)
+        .collect();
+    #[cfg(not(feature = "gcp-kms"))]
+    let proposed_gcp: Vec<&str> = Vec::new();
+    same_set(&existing_gcp, &proposed_gcp)
 }
 
 fn same_set(a: &[&str], b: &[&str]) -> bool {
@@ -333,6 +342,15 @@ fn unwrap_any(recipients: &[RecipientEntry], identity: &ResolvedIdentity) -> Res
                 match aws.unwrap(entry) {
                     Ok(dek) => return Ok(dek),
                     Err(e) => last_error = Some(format!("aws unwrap: {e}")),
+                }
+            }
+        }
+        #[cfg(feature = "gcp-kms")]
+        if let Some(gcp) = &identity.gcp_kms {
+            if gcp.can_unwrap(entry) {
+                match gcp.unwrap(entry) {
+                    Ok(dek) => return Ok(dek),
+                    Err(e) => last_error = Some(format!("gcp unwrap: {e}")),
                 }
             }
         }

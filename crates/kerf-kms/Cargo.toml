@@ -23,11 +23,13 @@ secrecy   = { workspace = true }
 aws-config  = { version = "1.5", optional = true, features = ["behavior-version-latest"] }
 aws-sdk-kms = { workspace = true, optional = true }
 aws-types   = { version = "1.3", optional = true }
+gcloud-kms  = { workspace = true, optional = true }
 tokio       = { workspace = true, optional = true }
 
 [features]
 default = ["aws-kms"]
 aws-kms = ["dep:aws-config", "dep:aws-sdk-kms", "dep:aws-types", "dep:tokio"]
+gcp-kms = ["dep:gcloud-kms", "dep:tokio"]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

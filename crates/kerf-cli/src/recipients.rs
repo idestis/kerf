@@ -9,12 +9,15 @@
 //! SOPS-prefixed env vars are honoured as fallback so existing SOPS users
 //! can keep their shell setup unchanged.
 
+#[cfg(feature = "aws-kms")]
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use kerf_kms::age::{AgeIdentity, AgeRecipient};
 #[cfg(feature = "aws-kms")]
 use kerf_kms::aws::{AwsKmsIdentity, AwsKmsRecipient};
+#[cfg(feature = "gcp-kms")]
+use kerf_kms::gcp::{GcpKmsIdentity, GcpKmsRecipient};
 
 use crate::{CliError, IdentityFlags, RecipientFlags};
 
@@ -26,6 +29,9 @@ pub struct ResolvedRecipients {
     /// feature is disabled at compile time.
     #[cfg(feature = "aws-kms")]
     pub aws_kms: Vec<AwsKmsRecipient>,
+    /// GCP Cloud KMS recipients (one per --gcp-kms resource id).
+    #[cfg(feature = "gcp-kms")]
+    pub gcp_kms: Vec<GcpKmsRecipient>,
     /// Other backends still pending implementation. Surfaced so the CLI
     /// can hard-error on use rather than silently dropping the flag.
     pub unsupported: Vec<UnsupportedRecipient>,
@@ -72,6 +78,19 @@ impl ResolvedRecipients {
         #[cfg(not(feature = "aws-kms"))]
         let aws_kms_specs = kms_specs.clone();
 
+        #[cfg(feature = "gcp-kms")]
+        let gcp_kms = {
+            let mut out = Vec::with_capacity(gcp_specs.len());
+            for spec in &gcp_specs {
+                out.push(GcpKmsRecipient::parse(spec).map_err(|e| {
+                    CliError::Usage(format!("invalid GCP KMS recipient {spec:?}: {e}"))
+                })?);
+            }
+            out
+        };
+        #[cfg(not(feature = "gcp-kms"))]
+        let gcp_kms_specs = gcp_specs.clone();
+
         let mut unsupported = Vec::new();
         #[cfg(not(feature = "aws-kms"))]
         for spec in aws_kms_specs {
@@ -80,7 +99,8 @@ impl ResolvedRecipients {
                 spec,
             });
         }
-        for spec in gcp_specs {
+        #[cfg(not(feature = "gcp-kms"))]
+        for spec in gcp_kms_specs {
             unsupported.push(UnsupportedRecipient {
                 kind: "gcp-kms",
                 spec,
@@ -93,15 +113,22 @@ impl ResolvedRecipients {
             });
         }
 
+        // `mut` is used only when a KMS feature is enabled; the allow keeps
+        // the age-only build warning-free.
+        #[allow(unused_mut)]
+        let mut any_real = !age.is_empty();
         #[cfg(feature = "aws-kms")]
-        let any_real = !age.is_empty() || !aws_kms.is_empty();
-        #[cfg(not(feature = "aws-kms"))]
-        let any_real = !age.is_empty();
+        {
+            any_real = any_real || !aws_kms.is_empty();
+        }
+        #[cfg(feature = "gcp-kms")]
+        {
+            any_real = any_real || !gcp_kms.is_empty();
+        }
 
         if !any_real && unsupported.is_empty() {
             return Err(CliError::NoRecipient(
-                "pass --age (or --kms/--gcp-kms/--azure-kv, when supported), \
-                 or set KERF_AGE_RECIPIENTS / KERF_KMS_ARN / SOPS_AGE_RECIPIENTS / SOPS_KMS_ARN"
+                "pass --age / --kms / --gcp-kms (or set the matching KERF_* / SOPS_* env var)"
                     .into(),
             ));
         }
@@ -112,6 +139,8 @@ impl ResolvedRecipients {
             age,
             #[cfg(feature = "aws-kms")]
             aws_kms,
+            #[cfg(feature = "gcp-kms")]
+            gcp_kms,
             unsupported,
         })
     }
@@ -124,23 +153,29 @@ pub struct ResolvedIdentity {
     pub age: Option<AgeIdentity>,
     #[cfg(feature = "aws-kms")]
     pub aws_kms: Option<AwsKmsIdentity>,
+    #[cfg(feature = "gcp-kms")]
+    pub gcp_kms: Option<GcpKmsIdentity>,
 }
 
 impl ResolvedIdentity {
     /// Build whatever identities we can from the environment.
     ///
-    /// We're permissive here: if AWS credentials are present, build an
-    /// AWS identity; if an age key is reachable, build an age identity.
-    /// The caller (decrypt path) picks whichever matches a recipient in
-    /// the file. Missing both is only an error if the file requires one.
+    /// We're permissive here: build an identity for each provider whose
+    /// credentials/keys are reachable. The caller (decrypt path) picks
+    /// whichever matches a recipient in the file. Missing all of them is
+    /// only an error if the file requires one.
     pub fn resolve(flags: &IdentityFlags) -> Result<Self, CliError> {
         let age = resolve_age_identity(flags)?;
         #[cfg(feature = "aws-kms")]
         let aws_kms = resolve_aws_identity();
+        #[cfg(feature = "gcp-kms")]
+        let gcp_kms = resolve_gcp_identity();
         Ok(Self {
             age,
             #[cfg(feature = "aws-kms")]
             aws_kms,
+            #[cfg(feature = "gcp-kms")]
+            gcp_kms,
         })
     }
 }
@@ -175,6 +210,16 @@ fn resolve_aws_identity() -> Option<AwsKmsIdentity> {
         .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
         .unwrap_or_else(|_| "us-east-1".to_string());
     Some(AwsKmsIdentity::new(&region))
+}
+
+#[cfg(feature = "gcp-kms")]
+fn resolve_gcp_identity() -> Option<GcpKmsIdentity> {
+    // Building the client performs auth discovery (ADC / GOOGLE_APPLICATION_
+    // CREDENTIALS / metadata server) or, with KERF_KMS_ENDPOINT_GCP set, an
+    // unauthenticated emulator client. If that fails (e.g. no creds on this
+    // host), we simply have no GCP identity — the decrypt path falls back to
+    // other identities and only errors if nothing can unwrap the file.
+    GcpKmsIdentity::new().ok()
 }
 
 /// Pick a list of comma-separated specs from CLI flags first, falling back
