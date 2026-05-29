@@ -16,7 +16,7 @@ Recipient backends are cargo features (`aws-kms` on by default; `gcp-kms`, `azur
 
 ## Roadmap
 
-What's done and what's next. Implemented commands today: `init`, `encrypt`, `decrypt`, `verify`, `keygen`.
+What's done and what's next. Implemented commands today: `init`, `encrypt`, `decrypt`, `verify`, `keygen`, `view`, `set`, `unset`, `rotate`, `keys`, and the plumbing set (`metadata`, `recipients`, `mac --verify`, `path-encrypted`).
 
 ### Core / crypto
 - [x] Diff-aware encrypt with the byte-identity rule
@@ -36,16 +36,17 @@ What's done and what's next. Implemented commands today: `init`, `encrypt`, `dec
 - [x] Azure Key Vault (RSA-OAEP-256 wrap/unwrap)
 - [ ] Verify Azure end-to-end against an emulator with the Keys API
 
-### CLI commands (porcelain still stubbed)
+### CLI commands
 - [x] `kerf init` — write `.kerf.yaml` creation rules
 - [x] `kerf verify` — MAC + AAD check, no plaintext output (exit codes per SPEC § 7.6)
-- [ ] `kerf rotate` — fresh DEK, re-encrypt every value, re-wrap
+- [x] `kerf rotate` — fresh DEK, re-encrypt every value, re-wrap
 - [ ] `kerf edit` — decrypt → `$EDITOR` → minimal-diff re-encrypt, in memory
 - [ ] `kerf exec -- <cmd>` — decrypt into child env, no plaintext on disk
-- [ ] `kerf set` / `kerf unset` — scripted single-value mutations (`--stdin`)
-- [ ] `kerf view` / `kerf diff` — read-only inspection
-- [ ] `kerf keys add` / `remove` / `list` — recipient management without DEK rotation
-- [ ] Plumbing commands (`recipients`, `metadata`, `mac --verify`, `path-encrypted`)
+- [x] `kerf set` / `kerf unset` — scripted single-value mutations (`set` reads from `--stdin`)
+- [x] `kerf view` — read-only inspection (whole file or one `--path`)
+- [ ] `kerf diff` — plaintext diff of two encrypted files
+- [x] `kerf keys add` / `remove` / `list` — recipient management without DEK rotation
+- [x] Plumbing commands (`recipients`, `metadata`, `mac --verify`, `path-encrypted`)
 
 ### Migration & distribution
 - [ ] `kerf import-sops` — read SOPS-format files and re-encrypt into kerf format
