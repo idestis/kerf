@@ -19,6 +19,7 @@ mod exit {
     pub const BAD_INPUT: u8 = 20;
 }
 
+mod config;
 mod io;
 mod recipients;
 mod run;
@@ -116,11 +117,28 @@ enum Command {
         #[command(flatten)]
         identity: IdentityFlags,
     },
-    /// Initialise a `.kerf.yaml` config (planned).
+    /// Initialise a `.kerf.yaml` config with a single creation rule.
+    ///
+    /// Recipients are given as `<type>:<value>` — e.g.
+    /// `aws-kms:arn:aws:kms:…`, `gcp-kms:projects/…`,
+    /// `azure-kv:https://…`, or `age:age1…` (a bare `age1…` also works).
     Init {
-        /// Recipient(s) to record.
+        /// Recipient(s) to record. Repeatable. At least one required.
         #[arg(long = "recipient", value_name = "KEY")]
         recipients: Vec<String>,
+        /// Destination path. Defaults to `./.kerf.yaml`.
+        #[arg(short, long, value_name = "PATH")]
+        output: Option<PathBuf>,
+        /// Override the rule's path matcher (default: any `*.kerf.*` file).
+        #[arg(long, value_name = "REGEX")]
+        path_regex: Option<String>,
+        /// Override which keys get encrypted (default: the built-in regex).
+        #[arg(long, value_name = "REGEX")]
+        encrypted_regex: Option<String>,
+        /// MAC over all leaves, not just encrypted ones (more diff churn;
+        /// catches changes to non-secret config). Default: encrypted only.
+        #[arg(long)]
+        mac_all: bool,
     },
     /// Generate a fresh age keypair. Writes the secret key to disk (0600)
     /// and prints the public recipient to stdout so it can be piped or
@@ -173,7 +191,19 @@ fn main() -> ExitCode {
             format,
             identity,
         }),
-        Command::Init { .. } => Err(CliError::Unimplemented),
+        Command::Init {
+            recipients,
+            output,
+            path_regex,
+            encrypted_regex,
+            mac_all,
+        } => config::init(config::InitArgs {
+            recipients,
+            output,
+            path_regex,
+            encrypted_regex,
+            mac_all,
+        }),
     };
 
     match result {

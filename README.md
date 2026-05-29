@@ -16,7 +16,7 @@ Recipient backends are cargo features (`aws-kms` on by default; `gcp-kms`, `azur
 
 ## Roadmap
 
-What's done and what's next. Implemented commands today: `encrypt`, `decrypt`, `verify`, `keygen`.
+What's done and what's next. Implemented commands today: `init`, `encrypt`, `decrypt`, `verify`, `keygen`.
 
 ### Core / crypto
 - [x] Diff-aware encrypt with the byte-identity rule
@@ -37,7 +37,7 @@ What's done and what's next. Implemented commands today: `encrypt`, `decrypt`, `
 - [ ] Verify Azure end-to-end against an emulator with the Keys API
 
 ### CLI commands (porcelain still stubbed)
-- [ ] `kerf init` — write `.kerf.yaml` creation rules
+- [x] `kerf init` — write `.kerf.yaml` creation rules
 - [x] `kerf verify` — MAC + AAD check, no plaintext output (exit codes per SPEC § 7.6)
 - [ ] `kerf rotate` — fresh DEK, re-encrypt every value, re-wrap
 - [ ] `kerf edit` — decrypt → `$EDITOR` → minimal-diff re-encrypt, in memory
