@@ -94,7 +94,6 @@ impl Envelope {
     }
 
     /// Reconstruct a `Nonce` from the envelope for the decrypt call.
-    #[must_use]
     pub fn nonce(&self) -> Nonce {
         Nonce::from_bytes(self.nonce)
     }

@@ -111,13 +111,10 @@ impl Identity for AgeIdentity {
     }
 
     fn unwrap(&self, entry: &RecipientEntry) -> Result<Dek> {
-        let encrypted_dek = match entry {
-            RecipientEntry::Age { encrypted_dek, .. } => encrypted_dek,
-            _ => {
-                return Err(Error::Unwrap(format!(
-                    "wrong recipient kind for age identity"
-                )))
-            }
+        let RecipientEntry::Age { encrypted_dek, .. } = entry else {
+            return Err(Error::Unwrap(
+                "wrong recipient kind for age identity".into(),
+            ));
         };
         let bytes = B64.decode(encrypted_dek)?;
         let plain = age::decrypt(&self.inner, &bytes)

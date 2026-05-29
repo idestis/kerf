@@ -27,3 +27,11 @@ subtle      = { workspace = true }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+# kerf-core's public API is small and its errors are exhaustively typed in
+# `error::Error`. `# Errors` sections would restate what the type already
+# tells you. Module-level docs cover the security properties that matter.
+missing_errors_doc = "allow"
+# The only realistic panic in this crate is OS CSPRNG failure (treated as
+# unrecoverable). Per-function `# Panics` blocks would all say the same
+# thing; documented once at the module level in `crypto`.
+missing_panics_doc = "allow"

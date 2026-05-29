@@ -2,7 +2,7 @@
 //!
 //! v0.1 ships only the `age` recipient, which is local-only (no network).
 //! AWS, GCP, and Azure KMS recipients are stubbed pending the integration-
-//! test harness (LocalStack + emulators) called for in CLAUDE.md.
+//! test harness (`LocalStack` + emulators) called for in CLAUDE.md.
 //!
 //! Why this lives in its own crate: it's the only place async appears.
 //! Keeping `kerf-core` sync makes the crypto easy to fuzz and test.

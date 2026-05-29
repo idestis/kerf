@@ -90,6 +90,7 @@ impl Nonce {
     }
 
     /// Borrow the nonce bytes for serialization into an envelope.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8; NONCE_LEN] {
         &self.0
     }
@@ -115,6 +116,10 @@ pub struct Sealed {
 /// AAD is the canonical dotted path of the value being encrypted (see SPEC
 /// § 4.3). This binds each ciphertext to its location in the file — moving
 /// it elsewhere will fail decryption.
+// Nonce is intentionally consumed by value, even though the body only borrows
+// from it — this is the type-system guarantee against nonce reuse under the
+// same DEK (AES-GCM catastrophic failure mode). Do not change to &Nonce.
+#[allow(clippy::needless_pass_by_value)]
 pub fn seal(dek: &Dek, nonce: Nonce, plaintext: &[u8], aad: &[u8]) -> Result<Sealed> {
     let unbound = UnboundKey::new(&AES_256_GCM, dek.expose())
         .expect("AES-256-GCM accepts any 32 bytes");
@@ -137,6 +142,8 @@ pub fn seal(dek: &Dek, nonce: Nonce, plaintext: &[u8], aad: &[u8]) -> Result<Sea
 /// AAD must match the value's canonical path — otherwise `Error::Decrypt`.
 /// The caller distinguishes "wrong key/tampering" (exit 11) from "AAD moved"
 /// (exit 12) at the file-engine layer, where the path context is known.
+// See `seal` — nonce is consumed by value by design.
+#[allow(clippy::needless_pass_by_value)]
 pub fn open(dek: &Dek, nonce: Nonce, sealed: &Sealed, aad: &[u8]) -> Result<Vec<u8>> {
     let unbound = UnboundKey::new(&AES_256_GCM, dek.expose())
         .expect("AES-256-GCM accepts any 32 bytes");

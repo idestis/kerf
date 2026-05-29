@@ -118,6 +118,7 @@ pub fn snapshot_previous(encrypted: &EncryptedTree, dek: &Dek) -> Result<Previou
 }
 
 /// Default compiled regex — convenience for callers that don't configure.
+#[must_use]
 pub fn default_encrypted_regex() -> Regex {
     Regex::new(DEFAULT_ENCRYPTED_REGEX).expect("default regex is valid")
 }

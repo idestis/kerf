@@ -21,3 +21,6 @@ secrecy   = { workspace = true }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+# Errors are exhaustively typed in `Error`; per-function # Errors blocks
+# would restate the type. Matches the policy in kerf-core.
+missing_errors_doc = "allow"
