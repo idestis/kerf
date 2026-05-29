@@ -116,6 +116,23 @@ fn write_secret_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), CliErro
     Ok(())
 }
 
+/// Serialize `tree`, preserving the comments/whitespace/order of `original`
+/// where possible (SPEC § 11.1). `original` is the source whose formatting we
+/// want to keep: the existing ciphertext on re-encrypt/edit, or the plaintext
+/// input on a first encrypt. Falls back to normalized output if it isn't valid
+/// UTF-8 (our formats always are, but be defensive).
+fn serialize_preserving(
+    format: FileFormat,
+    original: &[u8],
+    tree: &Value,
+) -> Result<String, CliError> {
+    let result = match std::str::from_utf8(original) {
+        Ok(orig) => format.serialize_preserving(orig, tree),
+        Err(_) => format.serialize(tree),
+    };
+    result.map_err(|e| CliError::Other(format!("serialize: {e}")))
+}
+
 pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
     let dest = resolve_dest(&args.file, args.output.as_deref(), args.in_place)?;
     let resolved = ResolvedRecipients::resolve(&args.recipients)?;
@@ -136,25 +153,27 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
 
     // If destination exists, build a previous-file snapshot for the kerf rule.
     // We need to unwrap the DEK from the existing file's recipient block first.
-    let (dek, previous, existing_entries) = if dest.exists() {
+    let (dek, previous, existing_entries, existing_raw) = if dest.exists() {
         let existing_raw = read(&dest)?;
         let existing: Value = format.parse(&existing_raw).map_err(|e| {
             CliError::BadInput(format!("{} parse {}: {e}", format.name(), dest.display()))
         })?;
 
         match try_unwrap_for_diff(&existing) {
-            Ok((existing_dek, prev, entries)) => (existing_dek, Some(prev), Some(entries)),
+            Ok((existing_dek, prev, entries)) => {
+                (existing_dek, Some(prev), Some(entries), Some(existing_raw))
+            }
             Err(reason) => {
                 tracing::warn!(
                     %reason,
                     "could not unwrap previous DEK — using fresh DEK, byte-identity \
                      for unchanged values will not hold this round"
                 );
-                (Dek::generate(), None, None)
+                (Dek::generate(), None, None, None)
             }
         }
     } else {
-        (Dek::generate(), None, None)
+        (Dek::generate(), None, None, None)
     };
 
     // SPEC § 6.4 "same recipient set: none change". If the existing
@@ -174,9 +193,10 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
 
     let encrypted = kerf_core::encrypt(plain, &dek, &regex, entries, previous.as_ref())?;
 
-    let serialized = format
-        .serialize(&encrypted)
-        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    // Preserve the existing ciphertext's layout on re-encrypt; otherwise
+    // preserve the plaintext input's layout (carrying its comments forward).
+    let original_for_preserve = existing_raw.unwrap_or(raw);
+    let serialized = serialize_preserving(format, &original_for_preserve, &encrypted)?;
     atomic_write(&dest, serialized.as_bytes())?;
     eprintln!("kerf: wrote {}", dest.display());
     Ok(())
@@ -208,9 +228,10 @@ pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
     // or whole-file MAC — surfaces here.
     let plain_tree = kerf_core::decrypt(tree, &dek)?;
 
-    let serialized = format
-        .serialize(&plain_tree)
-        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    // Preserve the ciphertext's comments/layout in the decrypted output: the
+    // kerf block is removed and ENC[...] values are replaced by plaintext, but
+    // everything else stays as written.
+    let serialized = serialize_preserving(format, &raw, &plain_tree)?;
     match args.output {
         Some(path) => {
             atomic_write(&path, serialized.as_bytes())?;
@@ -257,9 +278,7 @@ pub fn view(args: ViewArgs) -> Result<(), CliError> {
 
     match args.path {
         None => {
-            let serialized = format
-                .serialize(&plain_tree)
-                .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+            let serialized = serialize_preserving(format, &raw, &plain_tree)?;
             write_stdout(serialized.as_bytes())
         }
         Some(p) => {
@@ -390,9 +409,9 @@ pub fn edit(args: EditArgs) -> Result<(), CliError> {
     let dek = unwrap_any(&block.recipients, &identity)?;
     let previous = snapshot_previous(&tree, &dek)?;
     let plain = kerf_core::decrypt(tree, &dek)?;
-    let original_text = format
-        .serialize(&plain)
-        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    // The editor should see the file's own comments/layout, not a normalized
+    // dump — preserve them while stripping the kerf block and decrypting values.
+    let original_text = serialize_preserving(format, &raw, &plain)?;
 
     // Hand the plaintext to the editor via a scratch file that wipes itself.
     let ext = args
@@ -422,9 +441,8 @@ pub fn edit(args: EditArgs) -> Result<(), CliError> {
         .map_err(|e| CliError::Other(format!("stored encrypted_regex is invalid: {e}")))?;
     let encrypted =
         kerf_core::encrypt(edited_tree, &dek, &regex, block.recipients, Some(&previous))?;
-    let serialized = format
-        .serialize(&encrypted)
-        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    // Preserve the layout of what the user just saved (their comments win).
+    let serialized = serialize_preserving(format, &edited, &encrypted)?;
     atomic_write(&args.file, serialized.as_bytes())?;
     eprintln!("kerf: wrote {}", args.file.display());
     Ok(())
@@ -714,9 +732,9 @@ pub fn rotate(args: RotateArgs) -> Result<(), CliError> {
     // previous = None → full re-encrypt with fresh nonces under the new DEK.
     let encrypted = kerf_core::encrypt(plain, &new_dek, &regex, entries, None)?;
 
-    let serialized = format
-        .serialize(&encrypted)
-        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    // Every value changes (that's the point of rotation), but comments and
+    // layout are preserved against the existing ciphertext.
+    let serialized = serialize_preserving(format, &raw, &encrypted)?;
     atomic_write(&args.file, serialized.as_bytes())?;
 
     // --reason is audit output. The v1 on-disk block has no field for it
@@ -829,9 +847,9 @@ fn mutate_in_place(
         .map_err(|e| CliError::Other(format!("stored encrypted_regex is invalid: {e}")))?;
     let encrypted = kerf_core::encrypt(plain, &dek, &regex, block.recipients, Some(&previous))?;
 
-    let serialized = format
-        .serialize(&encrypted)
-        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    // Only the touched value changes on disk; preserve the rest of the
+    // ciphertext's layout and comments.
+    let serialized = serialize_preserving(format, &raw, &encrypted)?;
     atomic_write(file, serialized.as_bytes())?;
     eprintln!("kerf: wrote {}", file.display());
     Ok(())

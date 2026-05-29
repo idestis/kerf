@@ -125,6 +125,29 @@ impl FileFormat {
         }
     }
 
+    /// Serialize `tree` while preserving the comments, blank lines, key order,
+    /// and quoting of `original` for everything that did **not** change
+    /// (SPEC § 11.1, CLAUDE.md "File format" rule 1).
+    ///
+    /// The crypto pipeline still produces a normal [`Value`] tree; this step
+    /// rewrites only the scalar leaves whose rendered value differs from
+    /// `original`, leaving unchanged leaves — and all surrounding comments and
+    /// formatting — byte-for-byte intact. The `kerf:` metadata block is
+    /// appended (encrypt) or removed (decrypt) as the tree dictates.
+    ///
+    /// It falls back to [`serialize`](Self::serialize) (normalized output) when
+    /// the document structure changed too much to splice safely, and for JSON
+    /// (which has no comments). Correctness first: the fallback never emits
+    /// wrong data — only a noisier diff.
+    pub fn serialize_preserving(self, original: &str, tree: &Value) -> Result<String> {
+        match self {
+            Self::Env => env_serialize_preserving(original, tree),
+            // Implemented in follow-up commits; until then, identical to the
+            // normalized path (no regression — that's today's behaviour).
+            Self::Toml | Self::Yaml | Self::Json => self.serialize(tree),
+        }
+    }
+
     /// Human-readable name — used in error messages.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -413,6 +436,118 @@ fn parse_env(text: &str) -> Result<Value> {
         }
     }
     Ok(tree)
+}
+
+/// Render a flat-tree scalar to its raw dotenv value (before quoting).
+fn env_scalar(v: &Value, key: &str) -> Result<String> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        Value::Bool(b) => Ok(b.to_string()),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Null => Ok(String::new()),
+        Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => Err(Error::KerfBlock(
+            format!("env format is flat: value at {key:?} is not a scalar"),
+        )),
+    }
+}
+
+/// Comment/whitespace-preserving dotenv serializer (SPEC § 11.1).
+///
+/// Walks `original` line by line: comment and blank lines are kept verbatim; a
+/// `KEY=value` line whose value is unchanged is kept byte-for-byte (preserving
+/// its quoting, spacing, and any inline comment); only changed values are
+/// rewritten. Keys absent from the new tree are dropped (e.g. `unset`); keys
+/// new to the tree are appended. The packed `KERF_METADATA` line is updated,
+/// appended, or removed to match the tree's `kerf` block.
+fn env_serialize_preserving(original: &str, tree: &Value) -> Result<String> {
+    let Value::Mapping(map) = tree else {
+        return Err(Error::KerfBlock("env root must be a mapping".into()));
+    };
+
+    // Desired end state from the tree: data key -> raw (unquoted) value, in
+    // tree order, plus the packed metadata blob if a kerf block is present.
+    let mut desired: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut desired_metadata: Option<String> = None;
+    for (k, v) in map {
+        let Value::String(key) = k else {
+            return Err(Error::KerfBlock("env keys must be strings".into()));
+        };
+        if key == crate::kerf_block::RESERVED_KEY {
+            let yaml = serde_yaml::to_string(v)?;
+            desired_metadata = Some(B64.encode(yaml.as_bytes()));
+            continue;
+        }
+        desired.insert(key.clone(), env_scalar(v, key)?);
+        order.push(key.clone());
+    }
+
+    let mut out = String::new();
+    let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut metadata_emitted = false;
+
+    for raw_line in original.lines() {
+        let trimmed = raw_line.trim();
+        // Preserve comments and blank lines exactly.
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            out.push_str(raw_line);
+            out.push('\n');
+            continue;
+        }
+        let (has_export, kv) = match trimmed.strip_prefix("export ") {
+            Some(rest) => (true, rest.trim_start()),
+            None => (false, trimmed),
+        };
+        let Some((raw_key, raw_val)) = kv.split_once('=') else {
+            // Not a recognizable assignment — keep it verbatim rather than guess.
+            out.push_str(raw_line);
+            out.push('\n');
+            continue;
+        };
+        let key = raw_key.trim();
+
+        if key == ENV_METADATA_KEY {
+            if let Some(meta) = &desired_metadata {
+                writeln!(out, "{ENV_METADATA_KEY}={}", quote_env_value(meta))
+                    .expect("write to String");
+                metadata_emitted = true;
+            }
+            // else: tree has no kerf block (decrypt) → drop the line.
+            continue;
+        }
+
+        match desired.get(key) {
+            // Key removed from the tree (e.g. `unset`) → drop the line.
+            None => {}
+            Some(scalar) => {
+                if &parse_env_value(raw_val) == scalar {
+                    // Unchanged: keep the original line verbatim.
+                    out.push_str(raw_line);
+                    out.push('\n');
+                } else {
+                    // Changed: rewrite the value, preserving export + key.
+                    let prefix = if has_export { "export " } else { "" };
+                    writeln!(out, "{prefix}{key}={}", quote_env_value(scalar))
+                        .expect("write to String");
+                }
+                emitted.insert(key.to_string());
+            }
+        }
+    }
+
+    // Keys new to the tree (added, e.g. `set` of a fresh key) go at the end.
+    for key in &order {
+        if !emitted.contains(key) {
+            writeln!(out, "{key}={}", quote_env_value(&desired[key])).expect("write to String");
+        }
+    }
+    // First encrypt: no KERF_METADATA line existed yet, so append one.
+    if let Some(meta) = &desired_metadata {
+        if !metadata_emitted {
+            writeln!(out, "{ENV_METADATA_KEY}={}", quote_env_value(meta)).expect("write to String");
+        }
+    }
+    Ok(out)
 }
 
 /// Serialize a flat tree to dotenv, packing the `kerf` block into
@@ -776,6 +911,71 @@ mod tests {
             "ENC[AES-GCM,n:x,c:y,t:z]"
         );
         assert_eq!(reparsed["kerf"], Value::Mapping(block));
+    }
+
+    #[test]
+    fn env_preserving_keeps_comments_and_changes_only_touched_value() {
+        let original = "# header\nDB_HOST=db.local   # inline\nDB_PASSWORD=old\n";
+        let mut block = serde_yaml::Mapping::new();
+        block.insert(Value::String("version".into()), Value::Number(1.into()));
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(
+            Value::String("DB_HOST".into()),
+            Value::String("db.local".into()),
+        );
+        map.insert(
+            Value::String("DB_PASSWORD".into()),
+            Value::String("ENC[AES-GCM,n:x,c:y,t:z]".into()),
+        );
+        map.insert(Value::String("kerf".into()), Value::Mapping(block));
+
+        let out = FileFormat::Env
+            .serialize_preserving(original, &Value::Mapping(map))
+            .unwrap();
+        // Comment and unchanged line (with inline comment) kept verbatim.
+        assert!(out.contains("# header\n"), "{out}");
+        assert!(out.contains("DB_HOST=db.local   # inline\n"), "{out}");
+        // Changed secret rewritten to the envelope; old plaintext gone.
+        assert!(out.contains("ENC[AES-GCM,n:x,c:y,t:z]"), "{out}");
+        assert!(!out.contains("DB_PASSWORD=old"), "{out}");
+        assert!(out.contains("KERF_METADATA="), "{out}");
+    }
+
+    #[test]
+    fn env_preserving_decrypt_removes_metadata_and_restores_value() {
+        let original =
+            "# keep me\nDB_PASSWORD=\"ENC[AES-GCM,n:x,c:y,t:z]\"\nKERF_METADATA=abc123\n";
+        // No `kerf` key in the tree → decrypt direction.
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(
+            Value::String("DB_PASSWORD".into()),
+            Value::String("plaintext-secret".into()),
+        );
+        let out = FileFormat::Env
+            .serialize_preserving(original, &Value::Mapping(map))
+            .unwrap();
+        assert!(out.contains("# keep me\n"), "{out}");
+        assert!(out.contains("DB_PASSWORD=plaintext-secret\n"), "{out}");
+        assert!(
+            !out.contains("KERF_METADATA"),
+            "metadata must be dropped:\n{out}"
+        );
+    }
+
+    #[test]
+    fn env_preserving_unset_drops_line_and_set_appends() {
+        // Original has A and B; tree drops B (unset) and adds C (set new key).
+        let original = "# top\nA=1\nB=2\n";
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(Value::String("A".into()), Value::String("1".into()));
+        map.insert(Value::String("C".into()), Value::String("3".into()));
+        let out = FileFormat::Env
+            .serialize_preserving(original, &Value::Mapping(map))
+            .unwrap();
+        assert!(out.contains("# top\n"), "{out}");
+        assert!(out.contains("A=1\n"), "{out}");
+        assert!(!out.contains("B="), "removed key must be dropped:\n{out}");
+        assert!(out.contains("C=3\n"), "added key must be appended:\n{out}");
     }
 
     #[test]
