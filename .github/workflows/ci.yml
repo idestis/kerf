@@ -33,7 +33,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -46,7 +46,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --locked
+      # --all-features so every backend's unit tests compile and run. KMS
+      # end-to-end tests are #[ignore]d and never touch the network here;
+      # they run via `task test:integration` against local emulators.
+      - run: cargo test --workspace --all-features --locked
 
   msrv:
     name: MSRV (1.75)

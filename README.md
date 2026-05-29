@@ -76,10 +76,40 @@ Common tasks are exposed via [Taskfile](https://taskfile.dev):
 
 ```bash
 task            # list everything
-task test       # cargo test --workspace
+task test       # unit + offline tests (no network, safe anywhere — CI runs this)
 task lint       # fmt --check + clippy + cargo-deny
 task build      # release binary at target/release/kerf
 task release    # bump version, write CHANGELOG, push tag (CI builds binaries)
+```
+
+### Testing
+
+There are two tiers, split so the default suite never needs the network:
+
+| Command | What it runs | Needs |
+|---|---|---|
+| `task test` | All crypto, format, envelope, MAC, and KMS request-shape tests. KMS end-to-end tests are `#[ignore]`d and skipped here. | nothing |
+| `task test:integration` | The `#[ignore]`d KMS end-to-end tests, against **local emulators** over the real wire (no mocks — per [`CLAUDE.md`](CLAUDE.md)). | running emulator(s) + env vars |
+
+`task test` is what CI runs on every PR. Integration tests are for maintainers
+with emulators up locally; each provider's tests skip cleanly unless its
+endpoint env var is set, so you only need the emulators you actually want to
+exercise:
+
+```bash
+# AWS — floci or LocalStack on :4566
+export KERF_KMS_ENDPOINT_AWS=http://localhost:4566
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1
+
+# GCP — fake-cloud-kms (floci-gcp has no KMS) on :8085
+export KERF_KMS_ENDPOINT_GCP=localhost:8085
+export KERF_GCP_TEST_KEY=projects/test/locations/global/keyRings/r/cryptoKeys/k
+
+# Azure — floci-az or lowkey-vault on :4577
+export KERF_KMS_ENDPOINT_AZURE=http://localhost:4577
+export KERF_AZURE_TEST_KEY=https://<vault>/keys/<name>/<version>
+
+task test:integration
 ```
 
 Conventional Commits drive both the changelog and the version bump:

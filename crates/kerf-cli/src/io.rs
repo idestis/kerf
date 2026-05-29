@@ -28,7 +28,10 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     let file_name = path
         .file_name()
         .ok_or_else(|| CliError::Other(format!("invalid destination {}", path.display())))?;
-    let tmp = parent.join(format!(".{}.kerf-tmp.{suffix}", file_name.to_string_lossy()));
+    let tmp = parent.join(format!(
+        ".{}.kerf-tmp.{suffix}",
+        file_name.to_string_lossy()
+    ));
 
     let mut file = OpenOptions::new()
         .write(true)
@@ -44,10 +47,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
 
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
-        return Err(CliError::Other(format!(
-            "write tmp {}: {e}",
-            tmp.display()
-        )));
+        return Err(CliError::Other(format!("write tmp {}: {e}", tmp.display())));
     }
 
     std::fs::rename(&tmp, path).map_err(|e| {

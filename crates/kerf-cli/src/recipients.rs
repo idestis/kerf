@@ -57,9 +57,10 @@ impl ResolvedRecipients {
 
         let mut age = Vec::with_capacity(age_specs.len());
         for spec in &age_specs {
-            age.push(AgeRecipient::parse(spec).map_err(|e| {
-                CliError::Usage(format!("invalid age recipient {spec:?}: {e}"))
-            })?);
+            age.push(
+                AgeRecipient::parse(spec)
+                    .map_err(|e| CliError::Usage(format!("invalid age recipient {spec:?}: {e}")))?,
+            );
         }
 
         #[cfg(feature = "aws-kms")]

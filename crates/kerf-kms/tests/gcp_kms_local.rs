@@ -30,21 +30,25 @@ use kerf_kms::recipient::{Identity, Recipient};
 /// the emulator — creation semantics vary between emulators, so we leave key
 /// provisioning to the test setup rather than guessing an API.
 fn test_key() -> Option<String> {
-    let endpoint = std::env::var("KERF_KMS_ENDPOINT_GCP").ok().filter(|s| !s.is_empty());
-    let key = std::env::var("KERF_GCP_TEST_KEY").ok().filter(|s| !s.is_empty());
-    match (endpoint, key) {
-        (Some(_), Some(k)) => Some(k),
-        _ => {
-            eprintln!(
-                "kerf-kms gcp integration tests: set KERF_KMS_ENDPOINT_GCP and \
-                 KERF_GCP_TEST_KEY to run. Skipping. See tests/gcp_kms_local.rs."
-            );
-            None
-        }
+    let endpoint = std::env::var("KERF_KMS_ENDPOINT_GCP")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let key = std::env::var("KERF_GCP_TEST_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    if let (Some(_), Some(k)) = (endpoint, key) {
+        Some(k)
+    } else {
+        eprintln!(
+            "kerf-kms gcp integration tests: set KERF_KMS_ENDPOINT_GCP and \
+             KERF_GCP_TEST_KEY to run. Skipping. See tests/gcp_kms_local.rs."
+        );
+        None
     }
 }
 
 #[test]
+#[ignore = "requires a local GCP KMS emulator; run via `task test:integration`"]
 fn wrap_unwrap_roundtrip_against_emulator() {
     let Some(key) = test_key() else { return };
     let recipient = GcpKmsRecipient::parse(&key).expect("parse recipient");

@@ -215,10 +215,7 @@ mod tests {
     fn rejects_garbage_resource_id() {
         assert!(validate_resource_id("not-a-resource").is_err());
         assert!(validate_resource_id("projects/p/locations/l").is_err());
-        assert!(validate_resource_id(
-            "projects//locations/l/keyRings/r/cryptoKeys/k"
-        )
-        .is_err());
+        assert!(validate_resource_id("projects//locations/l/keyRings/r/cryptoKeys/k").is_err());
     }
 
     #[test]

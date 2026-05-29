@@ -28,9 +28,7 @@ pub type PlainTree = Value;
 /// walker accidentally trying to decrypt metadata.
 pub fn extract_kerf_block(tree: &mut Value) -> Result<KerfBlock> {
     let Value::Mapping(map) = tree else {
-        return Err(Error::KerfBlock(
-            "file root must be a YAML mapping".into(),
-        ));
+        return Err(Error::KerfBlock("file root must be a YAML mapping".into()));
     };
 
     let block_value = map
@@ -47,7 +45,9 @@ pub fn extract_kerf_block(tree: &mut Value) -> Result<KerfBlock> {
 /// keeps it visually separated from the user's data.
 pub fn embed_kerf_block(tree: &mut Value, block: &KerfBlock) -> Result<()> {
     let Value::Mapping(map) = tree else {
-        return Err(Error::KerfBlock("can only embed into a YAML mapping".into()));
+        return Err(Error::KerfBlock(
+            "can only embed into a YAML mapping".into(),
+        ));
     };
     let block_value = serde_yaml::to_value(block)?;
     // Remove first so it always lands at the end of the map (insertion
@@ -129,7 +129,9 @@ fn walk_plaintext(
     match value {
         Value::Mapping(map) => {
             for (k, v) in map {
-                let Some(key_str) = key_as_string(k) else { continue };
+                let Some(key_str) = key_as_string(k) else {
+                    continue;
+                };
                 let new_path = if path.is_empty() {
                     key_str.clone()
                 } else {
@@ -235,7 +237,9 @@ mod tests {
         )
         .unwrap();
         // kerf block must be present
-        assert!(matches!(encrypted, Value::Mapping(ref m) if m.contains_key(Value::String("kerf".into()))));
+        assert!(
+            matches!(encrypted, Value::Mapping(ref m) if m.contains_key(Value::String("kerf".into())))
+        );
         // password must be encrypted; host must be plain
         let pw = &encrypted["db"]["password"];
         let host = &encrypted["db"]["host"];
@@ -292,4 +296,3 @@ mod tests {
         assert_eq!(first["api"]["token"], second["api"]["token"]);
     }
 }
-

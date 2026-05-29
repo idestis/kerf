@@ -121,8 +121,8 @@ pub struct Sealed {
 // same DEK (AES-GCM catastrophic failure mode). Do not change to &Nonce.
 #[allow(clippy::needless_pass_by_value)]
 pub fn seal(dek: &Dek, nonce: Nonce, plaintext: &[u8], aad: &[u8]) -> Result<Sealed> {
-    let unbound = UnboundKey::new(&AES_256_GCM, dek.expose())
-        .expect("AES-256-GCM accepts any 32 bytes");
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, dek.expose()).expect("AES-256-GCM accepts any 32 bytes");
     let key = LessSafeKey::new(unbound);
     let mut in_out = plaintext.to_vec();
     let lc_nonce = LcNonce::assume_unique_for_key(*nonce.as_bytes());
@@ -145,8 +145,8 @@ pub fn seal(dek: &Dek, nonce: Nonce, plaintext: &[u8], aad: &[u8]) -> Result<Sea
 // See `seal` — nonce is consumed by value by design.
 #[allow(clippy::needless_pass_by_value)]
 pub fn open(dek: &Dek, nonce: Nonce, sealed: &Sealed, aad: &[u8]) -> Result<Vec<u8>> {
-    let unbound = UnboundKey::new(&AES_256_GCM, dek.expose())
-        .expect("AES-256-GCM accepts any 32 bytes");
+    let unbound =
+        UnboundKey::new(&AES_256_GCM, dek.expose()).expect("AES-256-GCM accepts any 32 bytes");
     let key = LessSafeKey::new(unbound);
     let mut in_out = Vec::with_capacity(sealed.ciphertext.len() + TAG_LEN);
     in_out.extend_from_slice(&sealed.ciphertext);
@@ -180,12 +180,7 @@ mod tests {
         let nonce = Nonce::random();
         let nonce_bytes = *nonce.as_bytes();
         let sealed = seal(&dek, nonce, b"hunter2", b"db.password").unwrap();
-        let result = open(
-            &dek,
-            Nonce::from_bytes(nonce_bytes),
-            &sealed,
-            b"db.host",
-        );
+        let result = open(&dek, Nonce::from_bytes(nonce_bytes), &sealed, b"db.host");
         assert!(result.is_err());
     }
 

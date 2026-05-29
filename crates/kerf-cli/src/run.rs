@@ -71,9 +71,7 @@ pub fn keygen(output: PathBuf) -> Result<(), CliError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let content = format!(
-        "# created: {now} (kerf keygen)\n# public key: {recipient}\n{secret}\n"
-    );
+    let content = format!("# created: {now} (kerf keygen)\n# public key: {recipient}\n{secret}\n");
 
     write_secret_file(&output, content.as_bytes())?;
     eprintln!("kerf: wrote secret key → {}", output.display());
@@ -120,7 +118,11 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
     // Parse plaintext input.
     let raw = read(&args.file)?;
     let plain: Value = format.parse(&raw).map_err(|e| {
-        CliError::BadInput(format!("{} parse {}: {e}", format.name(), args.file.display()))
+        CliError::BadInput(format!(
+            "{} parse {}: {e}",
+            format.name(),
+            args.file.display()
+        ))
     })?;
 
     // If destination exists, build a previous-file snapshot for the kerf rule.
@@ -128,11 +130,7 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
     let (dek, previous, existing_entries) = if dest.exists() {
         let existing_raw = read(&dest)?;
         let existing: Value = format.parse(&existing_raw).map_err(|e| {
-            CliError::BadInput(format!(
-                "{} parse {}: {e}",
-                format.name(),
-                dest.display()
-            ))
+            CliError::BadInput(format!("{} parse {}: {e}", format.name(), dest.display()))
         })?;
 
         match try_unwrap_for_diff(&existing) {
@@ -198,7 +196,11 @@ pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
 
     let raw = read(&args.file)?;
     let tree: Value = format.parse(&raw).map_err(|e| {
-        CliError::BadInput(format!("{} parse {}: {e}", format.name(), args.file.display()))
+        CliError::BadInput(format!(
+            "{} parse {}: {e}",
+            format.name(),
+            args.file.display()
+        ))
     })?;
 
     // Probe the kerf block once to find a recipient any of our identities
@@ -292,7 +294,11 @@ fn recipients_match(existing: &[RecipientEntry], resolved: &ResolvedRecipients) 
     if existing_other != 0 {
         return false;
     }
-    let proposed_age: Vec<&str> = resolved.age.iter().map(kerf_kms::age::AgeRecipient::spec).collect();
+    let proposed_age: Vec<&str> = resolved
+        .age
+        .iter()
+        .map(kerf_kms::age::AgeRecipient::spec)
+        .collect();
     if !same_set(&existing_age, &proposed_age) {
         return false;
     }

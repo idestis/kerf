@@ -52,8 +52,7 @@ fn create_kms_key() -> Option<String> {
 
     let rt = Runtime::new().ok()?;
     rt.block_on(async {
-        let region =
-            std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+        let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
         let endpoint = std::env::var("KERF_KMS_ENDPOINT_AWS").ok()?;
         let config = aws_config::defaults(BehaviorVersion::latest())
             .region(Region::new(region))
@@ -73,13 +72,13 @@ fn create_kms_key() -> Option<String> {
 }
 
 #[test]
+#[ignore = "requires a local AWS KMS emulator; run via `task test:integration`"]
 fn wrap_unwrap_roundtrip_against_emulator() {
     if !emulator_configured() {
         return;
     }
     let arn = create_kms_key().expect("create test key");
-    let recipient =
-        AwsKmsRecipient::parse(&arn, BTreeMap::new()).expect("parse recipient");
+    let recipient = AwsKmsRecipient::parse(&arn, BTreeMap::new()).expect("parse recipient");
     let identity = AwsKmsIdentity::new("us-east-1");
 
     let dek = Dek::generate();
@@ -95,6 +94,7 @@ fn wrap_unwrap_roundtrip_against_emulator() {
 }
 
 #[test]
+#[ignore = "requires a local AWS KMS emulator; run via `task test:integration`"]
 fn encryption_context_is_authenticated() {
     if !emulator_configured() {
         return;
@@ -104,8 +104,7 @@ fn encryption_context_is_authenticated() {
     let mut ctx = BTreeMap::new();
     ctx.insert("env".to_string(), "test".to_string());
 
-    let recipient =
-        AwsKmsRecipient::parse(&arn, ctx.clone()).expect("parse recipient");
+    let recipient = AwsKmsRecipient::parse(&arn, ctx.clone()).expect("parse recipient");
     let identity = AwsKmsIdentity::new("us-east-1");
 
     let dek = Dek::generate();
@@ -119,8 +118,7 @@ fn encryption_context_is_authenticated() {
 
     let tampered_entry = kerf_core::RecipientEntry::AwsKms {
         arn: arn.clone(),
-        encrypted_dek: base64::engine::general_purpose::STANDARD
-            .encode(&wrapped),
+        encrypted_dek: base64::engine::general_purpose::STANDARD.encode(&wrapped),
         encryption_context: Some(bad_ctx),
     };
 
@@ -132,8 +130,7 @@ fn encryption_context_is_authenticated() {
     // And the original context still unwraps.
     let good_entry = kerf_core::RecipientEntry::AwsKms {
         arn,
-        encrypted_dek: base64::engine::general_purpose::STANDARD
-            .encode(&wrapped),
+        encrypted_dek: base64::engine::general_purpose::STANDARD.encode(&wrapped),
         encryption_context: Some(ctx),
     };
     identity.unwrap(&good_entry).expect("good context unwraps");

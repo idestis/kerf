@@ -80,8 +80,8 @@ fn parse_arn(arn: &str) -> Result<(String, String, String)> {
 
 fn build_client(region: &str) -> Client {
     runtime_handle().block_on(async move {
-        let mut loader = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new(region.to_string()));
+        let mut loader =
+            aws_config::defaults(BehaviorVersion::latest()).region(Region::new(region.to_string()));
         if let Ok(endpoint) = std::env::var("KERF_KMS_ENDPOINT_AWS") {
             if !endpoint.is_empty() {
                 loader = loader.endpoint_url(endpoint);

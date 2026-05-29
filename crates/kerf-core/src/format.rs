@@ -149,8 +149,9 @@ fn walk_decrypt_inner(value: &mut Value, path: &str, dek: &Dek) -> Result<()> {
                 } else if let Value::String(s) = v {
                     if Envelope::looks_like(s) {
                         let envelope = Envelope::parse(s)?;
-                        let opened = open(dek, envelope.nonce(), &envelope.sealed, new_path.as_bytes())
-                            .map_err(|_| Error::AadMismatch(new_path.clone()))?;
+                        let opened =
+                            open(dek, envelope.nonce(), &envelope.sealed, new_path.as_bytes())
+                                .map_err(|_| Error::AadMismatch(new_path.clone()))?;
                         *v = bytes_to_scalar(&opened);
                     }
                 }
@@ -180,8 +181,9 @@ fn collect_inner(value: &Value, path: &str, dek: &Dek, out: &mut LeafMap) -> Res
                 } else if let Value::String(s) = v {
                     if Envelope::looks_like(s) {
                         let envelope = Envelope::parse(s)?;
-                        let opened = open(dek, envelope.nonce(), &envelope.sealed, new_path.as_bytes())
-                            .map_err(|_| Error::AadMismatch(new_path.clone()))?;
+                        let opened =
+                            open(dek, envelope.nonce(), &envelope.sealed, new_path.as_bytes())
+                                .map_err(|_| Error::AadMismatch(new_path.clone()))?;
                         out.insert(new_path, opened);
                     }
                 }
@@ -214,8 +216,9 @@ fn build_inner(
                 } else if let Value::String(s) = v {
                     if Envelope::looks_like(s) {
                         let envelope = Envelope::parse(s)?;
-                        let opened = open(dek, envelope.nonce(), &envelope.sealed, new_path.as_bytes())
-                            .map_err(|_| Error::AadMismatch(new_path.clone()))?;
+                        let opened =
+                            open(dek, envelope.nonce(), &envelope.sealed, new_path.as_bytes())
+                                .map_err(|_| Error::AadMismatch(new_path.clone()))?;
                         out.insert(new_path, (s.clone(), opened));
                     }
                 }
@@ -243,9 +246,7 @@ fn key_as_string(k: &Value) -> Result<String> {
         Value::String(s) => Ok(s.clone()),
         Value::Number(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        _ => Err(Error::KerfBlock(format!(
-            "unsupported map key type: {k:?}"
-        ))),
+        _ => Err(Error::KerfBlock(format!("unsupported map key type: {k:?}"))),
     }
 }
 

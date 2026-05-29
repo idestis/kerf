@@ -13,9 +13,9 @@
 pub mod age;
 #[cfg(feature = "aws-kms")]
 pub mod aws;
+mod error;
 #[cfg(feature = "gcp-kms")]
 pub mod gcp;
-mod error;
 pub mod recipient;
 
 pub use error::Error;

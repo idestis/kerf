@@ -191,7 +191,10 @@ fn yaml_to_json_value(v: &Value) -> Result<serde_json::Value> {
         }
         Value::String(s) => Ok(serde_json::Value::String(s.clone())),
         Value::Sequence(items) => Ok(serde_json::Value::Array(
-            items.iter().map(yaml_to_json_value).collect::<Result<_>>()?,
+            items
+                .iter()
+                .map(yaml_to_json_value)
+                .collect::<Result<_>>()?,
         )),
         Value::Mapping(map) => {
             let mut obj = serde_json::Map::new();
@@ -200,11 +203,7 @@ fn yaml_to_json_value(v: &Value) -> Result<serde_json::Value> {
                     Value::String(s) => s.clone(),
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
-                    _ => {
-                        return Err(Error::KerfBlock(
-                            "JSON object keys must be scalar".into(),
-                        ))
-                    }
+                    _ => return Err(Error::KerfBlock("JSON object keys must be scalar".into())),
                 };
                 obj.insert(key, yaml_to_json_value(v)?);
             }
@@ -272,10 +271,8 @@ fn yaml_to_toml_value(v: &Value) -> Result<toml::Value> {
                 // affects non-encrypted numeric config at the extreme range.
                 // The precision loss is the deliberate, documented tradeoff.
                 #[allow(clippy::cast_precision_loss)]
-                Ok(i64::try_from(u).map_or_else(
-                    |_| toml::Value::Float(u as f64),
-                    toml::Value::Integer,
-                ))
+                Ok(i64::try_from(u)
+                    .map_or_else(|_| toml::Value::Float(u as f64), toml::Value::Integer))
             } else if let Some(f) = n.as_f64() {
                 Ok(toml::Value::Float(f))
             } else {
@@ -284,7 +281,10 @@ fn yaml_to_toml_value(v: &Value) -> Result<toml::Value> {
         }
         Value::String(s) => Ok(toml::Value::String(s.clone())),
         Value::Sequence(items) => Ok(toml::Value::Array(
-            items.iter().map(yaml_to_toml_value).collect::<Result<_>>()?,
+            items
+                .iter()
+                .map(yaml_to_toml_value)
+                .collect::<Result<_>>()?,
         )),
         Value::Mapping(map) => {
             let mut table = toml::map::Map::new();
@@ -293,11 +293,7 @@ fn yaml_to_toml_value(v: &Value) -> Result<toml::Value> {
                     Value::String(s) => s.clone(),
                     Value::Number(n) => n.to_string(),
                     Value::Bool(b) => b.to_string(),
-                    _ => {
-                        return Err(Error::KerfBlock(
-                            "TOML table keys must be scalar".into(),
-                        ))
-                    }
+                    _ => return Err(Error::KerfBlock("TOML table keys must be scalar".into())),
                 };
                 table.insert(key, yaml_to_toml_value(v)?);
             }
@@ -332,8 +328,9 @@ fn reorder_values_before_tables(v: &mut toml::Value) {
             // Stable partition: take the existing entries in order, emit
             // non-table-like first, then table-like. Recurse into each.
             let entries: Vec<(String, toml::Value)> = std::mem::take(table).into_iter().collect();
-            let (mut values, mut tables): (Vec<_>, Vec<_>) =
-                entries.into_iter().partition(|(_, val)| !is_toml_table_like(val));
+            let (mut values, mut tables): (Vec<_>, Vec<_>) = entries
+                .into_iter()
+                .partition(|(_, val)| !is_toml_table_like(val));
             for (_, val) in values.iter_mut().chain(tables.iter_mut()) {
                 reorder_values_before_tables(val);
             }
@@ -430,11 +427,7 @@ fn serialize_env(tree: &Value) -> Result<String> {
     for (k, v) in map {
         let key = match k {
             Value::String(s) => s.clone(),
-            _ => {
-                return Err(Error::KerfBlock(
-                    "env keys must be strings".into(),
-                ))
-            }
+            _ => return Err(Error::KerfBlock("env keys must be strings".into())),
         };
         if key == crate::kerf_block::RESERVED_KEY {
             // Pack the block as base64(YAML) under the reserved metadata key.
@@ -457,8 +450,7 @@ fn serialize_env(tree: &Value) -> Result<String> {
     }
 
     if let Some(meta) = packed_metadata {
-        writeln!(out, "{ENV_METADATA_KEY}={}", quote_env_value(&meta))
-            .expect("write to String");
+        writeln!(out, "{ENV_METADATA_KEY}={}", quote_env_value(&meta)).expect("write to String");
     }
     Ok(out)
 }
@@ -646,7 +638,10 @@ mod tests {
         // serialization. Our reorder step must fix it so output is valid.
         let mut map = serde_yaml::Mapping::new();
         let mut db = serde_yaml::Mapping::new();
-        db.insert(Value::String("host".into()), Value::String("db.local".into()));
+        db.insert(
+            Value::String("host".into()),
+            Value::String("db.local".into()),
+        );
         map.insert(Value::String("db".into()), Value::Mapping(db));
         // top-level scalar after the table:
         map.insert(
@@ -672,10 +667,7 @@ mod tests {
     fn toml_datetime_degrades_to_string() {
         let original = b"created = 2026-05-29T10:00:00Z\n";
         let tree = FileFormat::Toml.parse(original).unwrap();
-        assert_eq!(
-            tree["created"].as_str().unwrap(),
-            "2026-05-29T10:00:00Z"
-        );
+        assert_eq!(tree["created"].as_str().unwrap(), "2026-05-29T10:00:00Z");
     }
 
     #[test]
@@ -731,14 +723,14 @@ mod tests {
             Value::String("MSG".into()),
             Value::String("hello world # not a comment".into()),
         );
-        map.insert(
-            Value::String("EQ".into()),
-            Value::String("a=b=c".into()),
-        );
+        map.insert(Value::String("EQ".into()), Value::String("a=b=c".into()));
         let tree = Value::Mapping(map);
         let out = FileFormat::Env.serialize(&tree).unwrap();
         let reparsed = FileFormat::Env.parse(out.as_bytes()).unwrap();
-        assert_eq!(reparsed["MSG"].as_str().unwrap(), "hello world # not a comment");
+        assert_eq!(
+            reparsed["MSG"].as_str().unwrap(),
+            "hello world # not a comment"
+        );
         assert_eq!(reparsed["EQ"].as_str().unwrap(), "a=b=c");
     }
 

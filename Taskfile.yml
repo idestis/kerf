@@ -92,19 +92,49 @@ tasks:
       - cargo fmt --all -- --check
 
   clippy:
-    desc: Run clippy with warnings as errors.
+    desc: Run clippy with warnings as errors (all features, so every backend is linted).
     cmds:
-      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
-    desc: Run the workspace test suite.
+    desc: 'Unit + offline tests across the workspace (no network, no emulators).'
     cmds:
-      - cargo test --workspace
+      # All crypto, format, envelope, MAC, and KMS request-shape tests run
+      # here. KMS integration tests skip themselves unless their KERF_KMS_
+      # ENDPOINT_* env var is set, so this is safe to run anywhere — CI too.
+      - cargo test --workspace --all-features
 
   test:core:
     desc: Fast core-only tests, optimized.
     cmds:
       - cargo test -p kerf-core --release
+
+  test:integration:
+    desc: 'KMS end-to-end tests against local emulators. Requires running emulators + env vars.'
+    cmds:
+      # These talk to real emulators over the wire (no mocks, per CLAUDE.md).
+      # Each provider's tests skip unless its endpoint env var is set:
+      #
+      #   AWS   — floci or LocalStack on :4566
+      #     export KERF_KMS_ENDPOINT_AWS=http://localhost:4566
+      #     export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1
+      #
+      #   GCP   — fake-cloud-kms (floci-gcp has no KMS) on :8085
+      #     export KERF_KMS_ENDPOINT_GCP=localhost:8085
+      #     export KERF_GCP_TEST_KEY=projects/test/locations/global/keyRings/r/cryptoKeys/k
+      #
+      #   Azure — floci-az or lowkey-vault on :4577
+      #     export KERF_KMS_ENDPOINT_AZURE=http://localhost:4577
+      #     export KERF_AZURE_TEST_KEY=https://<vault>/keys/<name>/<version>
+      #
+      # Run only the ones whose emulator you have up; the rest skip cleanly.
+      - cargo test --workspace --all-features -- --ignored
+    preconditions:
+      - sh: 'test -n "$KERF_KMS_ENDPOINT_AWS$KERF_KMS_ENDPOINT_GCP$KERF_KMS_ENDPOINT_AZURE"'
+        msg: |
+          No KMS emulator endpoint configured. Set at least one of
+          KERF_KMS_ENDPOINT_AWS / KERF_KMS_ENDPOINT_GCP / KERF_KMS_ENDPOINT_AZURE
+          and start the matching emulator. See the task definition for setup.
 
   deny:
     desc: 'Supply-chain audit (cargo-deny: advisories, licenses, bans, sources).'

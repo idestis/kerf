@@ -47,8 +47,7 @@ impl Recipient for AgeRecipient {
 
     fn wrap(&self, dek: &Dek) -> Result<WrappedDek> {
         let plaintext = expose_dek_bytes(dek);
-        age::encrypt(&self.inner, &plaintext)
-            .map_err(|e| Error::Wrap(format!("age encrypt: {e}")))
+        age::encrypt(&self.inner, &plaintext).map_err(|e| Error::Wrap(format!("age encrypt: {e}")))
     }
 
     fn entry(&self, wrapped: &WrappedDek) -> RecipientEntry {
