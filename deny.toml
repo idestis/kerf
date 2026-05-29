@@ -27,6 +27,10 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "CC0-1.0",
+    # Mozilla CA root-cert data bundled by webpki-roots / webpki-root-certs
+    # (pulled transitively via gcloud/azure's reqwest + tonic). A permissive
+    # data-sharing license, not a code license — fine to ship.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

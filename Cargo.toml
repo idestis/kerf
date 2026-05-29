@@ -33,7 +33,12 @@ subtle = "2.6"
 getrandom = "0.2"
 
 # KMS clients (only used by kerf-kms)
-aws-sdk-kms = "1.61"
+# default-features = false drops the SDK's `rustls` feature, which pulls the
+# legacy hyper-0.14 + rustls-0.21 connector (uses `ring`, banned by CLAUDE.md,
+# and carries RUSTSEC advisories in rustls-webpki 0.101). `default-https-client`
+# selects the modern rustls-0.23 + aws-lc-rs connector instead — the only TLS
+# backend kerf should link, consistent with the aws-lc-rs-only rule.
+aws-sdk-kms = { version = "1.61", default-features = false, features = ["default-https-client", "rt-tokio"] }
 # `google-cloud-kms` was renamed to `gcloud-kms` at its 1.x line; the old
 # name stalled at 0.6. We track the maintained crate.
 gcloud-kms = "1.5"
