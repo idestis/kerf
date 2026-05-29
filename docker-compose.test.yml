@@ -28,14 +28,19 @@ services:
       retries: 10
 
   # ─── GCP Cloud KMS ──────────────────────────────────────────────────────
-  # floci-gcp does NOT implement Cloud KMS, so we use fake-cloud-kms. The GCP
-  # integration test expects KERF_GCP_TEST_KEY to already exist; provision it
-  # with `task infra:keys` after the container is healthy.
+  # floci-gcp does NOT implement Cloud KMS, so we use fake-cloud-kms. It speaks
+  # the Cloud KMS gRPC API and listens on 9010 by default (no flags needed).
+  # The GCP integration test expects KERF_GCP_TEST_KEY to exist; provision it
+  # with `task infra:keys` after the container is up (CreateCryptoKey
+  # auto-creates version 1).
   gcp-kms:
     image: winor30/fake-cloud-kms:latest
+    # This image is published amd64-only; on Apple Silicon / arm64 hosts Docker
+    # needs to be told to pull the amd64 variant and run it under emulation
+    # (Rosetta / qemu). Harmless on amd64 hosts.
+    platform: linux/amd64
     ports:
-      - "8085:8085"
-    command: ["-host", "0.0.0.0", "-port", "8085"]
+      - "9010:9010"
 
   # ─── Azure Key Vault ────────────────────────────────────────────────────
   # Enabled once the Azure backend lands. lowkey-vault is the emulator; floci-az

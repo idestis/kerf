@@ -118,17 +118,16 @@ tasks:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_REGION: us-east-1
-      KERF_KMS_ENDPOINT_GCP: localhost:8085
-      KERF_GCP_TEST_KEY: projects/test/locations/global/keyRings/kerf/cryptoKeys/test
+      KERF_KMS_ENDPOINT_GCP: localhost:9010
     cmds:
       - task: infra:up
       # `defer` runs at task end in LIFO order — registered right after up so
-      # the emulators are torn down even if wait / keys / the tests fail.
+      # the emulators are torn down even if the wait or the tests fail.
       - defer: { task: infra:down }
       - task: infra:wait
-      - task: infra:keys
       # Real wire format, no mocks (per CLAUDE.md). --ignored runs ONLY the
-      # emulator-gated tests.
+      # emulator-gated tests; each self-provisions its own KMS key (AWS via
+      # kms:CreateKey, GCP via CreateKeyRing/CreateCryptoKey).
       - cargo test --workspace --all-features -- --ignored
 
   test:integration:manual:
@@ -176,9 +175,9 @@ tasks:
           [ "$i" = 30 ] && { echo "AWS emulator did not become ready"; exit 1; }
           sleep 2
         done
-        echo "Waiting for GCP KMS emulator (:8085)…"
+        echo "Waiting for GCP KMS emulator (:9010)…"
         for i in $(seq 1 30); do
-          if (exec 3<>/dev/tcp/localhost/8085) 2>/dev/null; then exec 3>&- 3<&-; break; fi
+          if (exec 3<>/dev/tcp/localhost/9010) 2>/dev/null; then exec 3>&- 3<&-; break; fi
           [ "$i" = 30 ] && { echo "GCP emulator did not become ready"; exit 1; }
           sleep 2
         done
@@ -193,25 +192,7 @@ tasks:
         echo 'export AWS_ACCESS_KEY_ID=test'
         echo 'export AWS_SECRET_ACCESS_KEY=test'
         echo 'export AWS_REGION=us-east-1'
-        echo 'export KERF_KMS_ENDPOINT_GCP=localhost:8085'
-        echo 'export KERF_GCP_TEST_KEY=projects/test/locations/global/keyRings/kerf/cryptoKeys/test'
-
-  infra:keys:
-    desc: 'Provision the GCP test key in the running emulator (AWS self-provisions).'
-    preconditions:
-      - sh: command -v grpcurl >/dev/null
-        msg: 'grpcurl not found (brew install grpcurl). Needed to create the GCP test key.'
-    cmds:
-      # fake-cloud-kms speaks the Cloud KMS gRPC API. Create the key ring and
-      # crypto key the GCP integration test expects. Ignore "already exists".
-      - |
-        set -e
-        EP=localhost:8085
-        grpcurl -plaintext -d '{"parent":"projects/test/locations/global","key_ring_id":"kerf"}' \
-          "$EP" google.cloud.kms.v1.KeyManagementService/CreateKeyRing 2>/dev/null || true
-        grpcurl -plaintext -d '{"parent":"projects/test/locations/global/keyRings/kerf","crypto_key_id":"test","crypto_key":{"purpose":"ENCRYPT_DECRYPT"}}' \
-          "$EP" google.cloud.kms.v1.KeyManagementService/CreateCryptoKey 2>/dev/null || true
-        echo "GCP test key ready: projects/test/locations/global/keyRings/kerf/cryptoKeys/test"
+        echo 'export KERF_KMS_ENDPOINT_GCP=localhost:9010'
 
   deny:
     desc: 'Supply-chain audit (cargo-deny: advisories, licenses, bans, sources).'
