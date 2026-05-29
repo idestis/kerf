@@ -243,6 +243,75 @@ pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+pub struct ViewArgs {
+    pub file: PathBuf,
+    pub path: Option<String>,
+    pub format: Option<String>,
+    pub identity: IdentityFlags,
+}
+
+/// `kerf view <file> [--path <dotted.path>]` (SPEC § 7.1) — read-only decrypt
+/// to stdout. With `--path`, print just that one value: a scalar is emitted
+/// raw (no quoting), a subtree is re-serialized in the file's format.
+///
+/// Like `decrypt`, this writes plaintext to stdout — it is *read-only* with
+/// respect to the file (never writes plaintext to disk).
+pub fn view(args: ViewArgs) -> Result<(), CliError> {
+    let identity = ResolvedIdentity::resolve(&args.identity)?;
+    let format = resolve_format(&args.file, args.format.as_deref())?;
+
+    let raw = read(&args.file)?;
+    let tree: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!(
+            "{} parse {}: {e}",
+            format.name(),
+            args.file.display()
+        ))
+    })?;
+
+    let dek = {
+        let mut probe = tree.clone();
+        let block = kerf_core::engine::extract_kerf_block(&mut probe)?;
+        unwrap_any(&block.recipients, &identity)?
+    };
+
+    let plain_tree = kerf_core::decrypt(tree, &dek)?;
+
+    match args.path {
+        None => {
+            let serialized = format
+                .serialize(&plain_tree)
+                .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+            write_stdout(serialized.as_bytes())
+        }
+        Some(p) => {
+            let segs = crate::path::parse(&p)?;
+            let value = crate::path::get(&plain_tree, &segs)
+                .ok_or_else(|| CliError::Usage(format!("path {p:?} not found")))?;
+            let out = render_scalar_or_subtree(value, format)?;
+            write_stdout(out.as_bytes())
+        }
+    }
+}
+
+/// Render a single extracted value: scalars print raw (so `kerf view f --path
+/// db.password` yields exactly the secret, pipe-friendly), everything else is
+/// serialized as a subtree in the file's format.
+fn render_scalar_or_subtree(value: &Value, format: FileFormat) -> Result<String, CliError> {
+    match value {
+        Value::String(s) => Ok(format!("{s}\n")),
+        Value::Bool(b) => Ok(format!("{b}\n")),
+        Value::Number(n) => Ok(format!("{n}\n")),
+        Value::Null => Ok("\n".to_string()),
+        Value::Mapping(_) | Value::Sequence(_) => format
+            .serialize(value)
+            .map_err(|e| CliError::Other(format!("serialize: {e}"))),
+        Value::Tagged(_) => format
+            .serialize(value)
+            .map_err(|e| CliError::Other(format!("serialize: {e}"))),
+    }
+}
+
 pub fn verify(args: VerifyArgs) -> Result<(), CliError> {
     let identity = ResolvedIdentity::resolve(&args.identity)?;
     let format = resolve_format(&args.file, args.format.as_deref())?;
@@ -305,6 +374,98 @@ pub fn mac_verify(args: VerifyArgs) -> Result<(), CliError> {
         "kerf: {} MAC OK ({count} encrypted value(s))",
         args.file.display()
     );
+    Ok(())
+}
+
+pub struct SetArgs {
+    pub file: PathBuf,
+    pub path: String,
+    pub format: Option<String>,
+    pub identity: IdentityFlags,
+}
+
+pub struct UnsetArgs {
+    pub file: PathBuf,
+    pub path: String,
+    pub format: Option<String>,
+    pub identity: IdentityFlags,
+}
+
+/// `kerf set <file> <path>` (SPEC § 7.4) — set one value through the
+/// diff-aware encrypt path. The value is read from **stdin** (never argv, per
+/// CLAUDE.md CLI rule 3) and stored as a string.
+///
+/// Only the touched value's envelope changes on disk; every other value keeps
+/// its byte-identical ciphertext (the kerf rule), so the git diff is one line.
+pub fn set(args: SetArgs) -> Result<(), CliError> {
+    let segs = crate::path::parse(&args.path)?;
+    let value_bytes = crate::io::read_stdin_value()?;
+    let value = String::from_utf8(value_bytes)
+        .map_err(|_| CliError::BadInput("value on stdin is not valid UTF-8".into()))?;
+
+    mutate_in_place(
+        &args.file,
+        args.format.as_deref(),
+        &args.identity,
+        |plain| crate::path::set(plain, &segs, Value::String(value)),
+    )
+}
+
+/// `kerf unset <file> <path>` (SPEC § 7.4) — remove one value through the
+/// diff-aware encrypt path. The removed line disappears; all others are
+/// byte-identical.
+pub fn unset(args: UnsetArgs) -> Result<(), CliError> {
+    let segs = crate::path::parse(&args.path)?;
+    mutate_in_place(
+        &args.file,
+        args.format.as_deref(),
+        &args.identity,
+        |plain| crate::path::remove(plain, &segs),
+    )
+}
+
+/// Load an encrypted file, decrypt it (verifying the MAC), apply `mutate` to
+/// the plaintext tree, then diff-aware re-encrypt in place under the *same*
+/// DEK, recipients, and `encrypted_regex`. Atomic write.
+///
+/// Reusing the existing DEK and recipient entries verbatim is what keeps
+/// unchanged values byte-identical — this is the `set`/`unset` engine.
+fn mutate_in_place(
+    file: &Path,
+    format_override: Option<&str>,
+    identity_flags: &IdentityFlags,
+    mutate: impl FnOnce(&mut Value) -> Result<(), CliError>,
+) -> Result<(), CliError> {
+    let identity = ResolvedIdentity::resolve(identity_flags)?;
+    let format = resolve_format(file, format_override)?;
+
+    let raw = read(file)?;
+    let tree: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!("{} parse {}: {e}", format.name(), file.display()))
+    })?;
+
+    // Pull recipients + regex from the existing block, and unwrap its DEK.
+    let block = {
+        let mut probe = tree.clone();
+        kerf_core::engine::extract_kerf_block(&mut probe)?
+    };
+    let dek = unwrap_any(&block.recipients, &identity)?;
+
+    // Snapshot before decrypt drives the kerf rule; decrypt verifies the MAC.
+    let previous = snapshot_previous(&tree, &dek)?;
+    let mut plain = kerf_core::decrypt(tree, &dek)?;
+
+    mutate(&mut plain)?;
+
+    let regex = Regex::new(&block.encrypted_regex)
+        .map_err(|e| CliError::Other(format!("stored encrypted_regex is invalid: {e}")))?;
+    let encrypted = kerf_core::encrypt(plain, &dek, &regex, block.recipients, Some(&previous))?;
+
+    let serialized = format
+        .serialize(&encrypted)
+        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    atomic_write(file, serialized.as_bytes())?;
+    eprintln!("kerf: wrote {}", file.display());
     Ok(())
 }
 

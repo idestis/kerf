@@ -62,6 +62,34 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Read a secret value from stdin for `kerf set`. Refuses to block on an
+/// interactive terminal (CLAUDE.md CLI rule 4): if stdin is a TTY there's no
+/// piped value, so fail clearly rather than hang waiting for input.
+///
+/// A single trailing newline (`\n` or `\r\n`) is stripped — it's almost always
+/// an artifact of `echo` / here-strings, not part of the secret. Embedded
+/// newlines are preserved.
+pub fn read_stdin_value() -> Result<Vec<u8>, CliError> {
+    use std::io::{IsTerminal, Read};
+    let mut stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        return Err(CliError::Usage(
+            "no value on stdin — pipe the value in, e.g. `printf %s secret | kerf set …`".into(),
+        ));
+    }
+    let mut buf = Vec::new();
+    stdin
+        .read_to_end(&mut buf)
+        .map_err(|e| CliError::Other(format!("read stdin: {e}")))?;
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    }
+    Ok(buf)
+}
+
 /// Write to stdout, flushing at the end.
 pub fn write_stdout(bytes: &[u8]) -> Result<(), CliError> {
     let mut out = std::io::stdout().lock();

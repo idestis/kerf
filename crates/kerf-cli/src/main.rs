@@ -21,6 +21,7 @@ mod exit {
 
 mod config;
 mod io;
+mod path;
 mod plumbing;
 mod recipients;
 mod run;
@@ -149,6 +150,44 @@ enum Command {
         #[arg(short, long, value_name = "PATH")]
         output: PathBuf,
     },
+    /// Read-only decrypt to stdout. With --path, print just one value.
+    View {
+        /// Encrypted file.
+        file: PathBuf,
+        /// Dotted path to extract (e.g. `db.password`). Whole file if omitted.
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        #[command(flatten)]
+        identity: IdentityFlags,
+    },
+    /// Set one value (read from stdin) through the diff-aware encrypt path.
+    /// Value never appears in argv. Mutates the file in place.
+    Set {
+        /// Encrypted file (mutated in place).
+        file: PathBuf,
+        /// Dotted path to set (e.g. `db.password`).
+        path: String,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        #[command(flatten)]
+        identity: IdentityFlags,
+    },
+    /// Remove one value through the diff-aware encrypt path. Mutates in place.
+    Unset {
+        /// Encrypted file (mutated in place).
+        file: PathBuf,
+        /// Dotted path to remove (e.g. `db.password`).
+        path: String,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        #[command(flatten)]
+        identity: IdentityFlags,
+    },
     /// [plumbing] Print the `kerf:` block (without DEKs) as JSON.
     Metadata {
         /// Encrypted file.
@@ -244,6 +283,39 @@ fn main() -> ExitCode {
             path_regex,
             encrypted_regex,
             mac_all,
+        }),
+        Command::View {
+            file,
+            path,
+            format,
+            identity,
+        } => run::view(run::ViewArgs {
+            file,
+            path,
+            format,
+            identity,
+        }),
+        Command::Set {
+            file,
+            path,
+            format,
+            identity,
+        } => run::set(run::SetArgs {
+            file,
+            path,
+            format,
+            identity,
+        }),
+        Command::Unset {
+            file,
+            path,
+            format,
+            identity,
+        } => run::unset(run::UnsetArgs {
+            file,
+            path,
+            format,
+            identity,
         }),
         Command::Metadata { file, format } => plumbing::metadata(file, format),
         Command::Recipients { file, format } => plumbing::recipients(file, format),
