@@ -142,9 +142,10 @@ impl FileFormat {
     pub fn serialize_preserving(self, original: &str, tree: &Value) -> Result<String> {
         match self {
             Self::Env => env_serialize_preserving(original, tree),
-            // Implemented in follow-up commits; until then, identical to the
-            // normalized path (no regression — that's today's behaviour).
-            Self::Toml | Self::Yaml | Self::Json => self.serialize(tree),
+            Self::Toml => toml_serialize_preserving(original, tree),
+            // YAML lands in a follow-up commit; JSON has no comments. Until
+            // then these match the normalized path (today's behaviour).
+            Self::Yaml | Self::Json => self.serialize(tree),
         }
     }
 
@@ -369,6 +370,231 @@ fn reorder_values_before_tables(v: &mut toml::Value) {
             }
         }
         _ => {}
+    }
+}
+
+// ──── TOML (comment-preserving via toml_edit) ─────────────────────────────
+
+/// Comment/whitespace-preserving TOML serializer (SPEC § 11.1).
+///
+/// `toml_edit`'s document model keeps every byte of formatting for items we
+/// don't touch. We parse `original`, then reconcile it against `tree`: scalar
+/// data values are updated in place (keeping their decor and any leading
+/// comments), data keys absent from the tree are removed, and the generated
+/// `kerf` table is replaced wholesale (its formatting is ours, not the user's)
+/// or removed on decrypt.
+fn toml_serialize_preserving(original: &str, tree: &Value) -> Result<String> {
+    use toml_edit::DocumentMut;
+
+    let mut doc = original
+        .parse::<DocumentMut>()
+        .map_err(|e| Error::Envelope(format!("toml parse: {e}")))?;
+
+    let Value::Mapping(map) = tree else {
+        return Err(Error::KerfBlock("toml root must be a mapping".into()));
+    };
+
+    // Split the generated kerf block from the user's data: data is reconciled
+    // in place (decor-preserving); the kerf block is replaced wholesale.
+    let mut data = serde_yaml::Mapping::new();
+    let mut kerf: Option<&Value> = None;
+    for (k, v) in map {
+        if matches!(k, Value::String(s) if s == crate::kerf_block::RESERVED_KEY) {
+            kerf = Some(v);
+        } else {
+            data.insert(k.clone(), v.clone());
+        }
+    }
+
+    toml_sync_table(doc.as_table_mut(), &data)?;
+
+    match kerf {
+        Some(block) => {
+            doc.as_table_mut()
+                .insert(crate::kerf_block::RESERVED_KEY, toml_value_to_item(block)?);
+        }
+        None => {
+            doc.as_table_mut().remove(crate::kerf_block::RESERVED_KEY);
+        }
+    }
+
+    Ok(doc.to_string())
+}
+
+/// Reconcile a `toml_edit::Table` against the desired `Mapping`, in place.
+/// Scalars are updated keeping their decor; nested mappings recurse; data
+/// arrays (which never change — array elements have no key to encrypt) are
+/// left untouched if present, inserted if new; keys absent from `map` are
+/// removed. `toml_sync_table` is never given the `kerf` key.
+fn toml_sync_table(table: &mut toml_edit::Table, map: &serde_yaml::Mapping) -> Result<()> {
+    // Remove keys the tree no longer has (deletions; also drops a stale kerf
+    // table before it's re-inserted by the caller).
+    let stale: Vec<String> = table
+        .iter()
+        .map(|(k, _)| k.to_string())
+        .filter(|k| !map.contains_key(Value::String(k.clone())))
+        .collect();
+    for k in stale {
+        table.remove(&k);
+    }
+
+    for (k, v) in map {
+        let key = match k {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => return Err(Error::KerfBlock("toml table keys must be scalar".into())),
+        };
+        match v {
+            Value::Mapping(sub) => {
+                if !matches!(table.get(&key), Some(toml_edit::Item::Table(_))) {
+                    table.insert(&key, toml_edit::Item::Table(toml_edit::Table::new()));
+                }
+                if let Some(toml_edit::Item::Table(t)) = table.get_mut(&key) {
+                    toml_sync_table(t, sub)?;
+                }
+            }
+            Value::Sequence(_) => {
+                // Data arrays are unchanged across encrypt/decrypt (their
+                // elements have no key to match the regex). Keep the original
+                // bytes if present; otherwise insert a fresh conversion.
+                if table.get(&key).is_none() {
+                    table.insert(&key, toml_value_to_item(v)?);
+                }
+            }
+            scalar => toml_set_scalar(table, &key, scalar)?,
+        }
+    }
+    Ok(())
+}
+
+/// Set a scalar value at `key`. If the value is unchanged, the existing item
+/// is left completely untouched (preserving its decor and any comments). Only
+/// a genuine change rewrites the value, and then the existing value's decor
+/// (spacing, inline comment) is carried over.
+fn toml_set_scalar(table: &mut toml_edit::Table, key: &str, scalar: &Value) -> Result<()> {
+    // Unchanged scalar → do nothing, so all decor stays byte-for-byte.
+    if let Some(existing) = table.get(key).and_then(toml_edit::Item::as_value) {
+        if toml_value_matches(existing, scalar) {
+            return Ok(());
+        }
+    }
+
+    let new_value = toml_scalar_value(scalar)?;
+    match table.get_mut(key) {
+        Some(item) if item.is_value() => {
+            let decor = item.as_value().expect("is_value").decor().clone();
+            let mut nv = new_value;
+            *nv.decor_mut() = decor;
+            *item = toml_edit::Item::Value(nv);
+        }
+        _ => {
+            table.insert(key, toml_edit::Item::Value(new_value));
+        }
+    }
+    Ok(())
+}
+
+/// True if a `toml_edit::Value` already equals the desired scalar `Value`, so
+/// it can be left untouched. Conservative: anything that doesn't clearly match
+/// is treated as changed (worst case is a rewritten value, never wrong data).
+fn toml_value_matches(existing: &toml_edit::Value, scalar: &Value) -> bool {
+    match scalar {
+        Value::String(s) => existing.as_str() == Some(s.as_str()),
+        Value::Bool(b) => existing.as_bool() == Some(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                existing.as_integer() == Some(i)
+            } else if let Some(f) = n.as_f64() {
+                existing.as_float() == Some(f)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Convert a scalar `Value` to a `toml_edit::Value`.
+fn toml_scalar_value(v: &Value) -> Result<toml_edit::Value> {
+    match v {
+        Value::String(s) => Ok(s.as_str().into()),
+        Value::Bool(b) => Ok((*b).into()),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.into())
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.into())
+            } else {
+                Ok(n.to_string().into())
+            }
+        }
+        Value::Null => Err(Error::KerfBlock(
+            "TOML has no null; cannot serialize a null value".into(),
+        )),
+        Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => Err(Error::KerfBlock(
+            "toml_scalar_value called on a non-scalar".into(),
+        )),
+    }
+}
+
+/// Convert an arbitrary `Value` to a `toml_edit::Item` for wholesale insertion
+/// (the kerf block, or a brand-new key). Mappings emit scalar entries before
+/// table-like entries, per the TOML grammar.
+fn toml_value_to_item(v: &Value) -> Result<toml_edit::Item> {
+    match v {
+        Value::Mapping(map) => {
+            let mut table = toml_edit::Table::new();
+            // Scalars/arrays-of-scalars first, then tables/arrays-of-tables.
+            let mut deferred: Vec<(String, &Value)> = Vec::new();
+            for (k, val) in map {
+                let key = match k {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => return Err(Error::KerfBlock("toml table keys must be scalar".into())),
+                };
+                if value_is_table_like(val) {
+                    deferred.push((key, val));
+                } else {
+                    table.insert(&key, toml_value_to_item(val)?);
+                }
+            }
+            for (key, val) in deferred {
+                table.insert(&key, toml_value_to_item(val)?);
+            }
+            Ok(toml_edit::Item::Table(table))
+        }
+        Value::Sequence(items) => {
+            if !items.is_empty() && items.iter().all(|i| matches!(i, Value::Mapping(_))) {
+                let mut aot = toml_edit::ArrayOfTables::new();
+                for item in items {
+                    if let toml_edit::Item::Table(t) = toml_value_to_item(item)? {
+                        aot.push(t);
+                    }
+                }
+                Ok(toml_edit::Item::ArrayOfTables(aot))
+            } else {
+                let mut arr = toml_edit::Array::new();
+                for item in items {
+                    arr.push(toml_scalar_value(item)?);
+                }
+                Ok(toml_edit::Item::Value(toml_edit::Value::Array(arr)))
+            }
+        }
+        scalar => Ok(toml_edit::Item::Value(toml_scalar_value(scalar)?)),
+    }
+}
+
+/// True if a `Value` renders as a TOML table or array-of-tables (must follow
+/// plain key/values within its parent).
+fn value_is_table_like(v: &Value) -> bool {
+    match v {
+        Value::Mapping(_) => true,
+        Value::Sequence(items) => {
+            !items.is_empty() && items.iter().all(|i| matches!(i, Value::Mapping(_)))
+        }
+        _ => false,
     }
 }
 
@@ -911,6 +1137,53 @@ mod tests {
             "ENC[AES-GCM,n:x,c:y,t:z]"
         );
         assert_eq!(reparsed["kerf"], Value::Mapping(block));
+    }
+
+    #[test]
+    fn toml_preserving_keeps_comments_and_changes_only_secret() {
+        let original = "# top comment\nport = 8080   # inline\n\n[db]\n# secret below\npassword = \"old\"\nhost = \"db.local\"\n";
+        let mut block = serde_yaml::Mapping::new();
+        block.insert(Value::String("version".into()), Value::Number(1.into()));
+        let mut db = serde_yaml::Mapping::new();
+        db.insert(
+            Value::String("password".into()),
+            Value::String("ENC[AES-GCM,n:x,c:y,t:z]".into()),
+        );
+        db.insert(
+            Value::String("host".into()),
+            Value::String("db.local".into()),
+        );
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(Value::String("port".into()), Value::Number(8080.into()));
+        map.insert(Value::String("db".into()), Value::Mapping(db));
+        map.insert(Value::String("kerf".into()), Value::Mapping(block));
+
+        let out = FileFormat::Toml
+            .serialize_preserving(original, &Value::Mapping(map))
+            .unwrap();
+        assert!(out.contains("# top comment"), "{out}");
+        assert!(out.contains("port = 8080   # inline"), "{out}");
+        assert!(out.contains("# secret below"), "{out}");
+        assert!(out.contains("ENC[AES-GCM,n:x,c:y,t:z]"), "{out}");
+        assert!(!out.contains("\"old\""), "old secret must be gone:\n{out}");
+        assert!(out.contains("[kerf]"), "{out}");
+    }
+
+    #[test]
+    fn toml_preserving_decrypt_removes_kerf_and_restores_value() {
+        let original = "# keep me\npassword = \"ENC[AES-GCM,n:x,c:y,t:z]\"\n\n[kerf]\nversion = 1\ncipher = \"aes-256-gcm\"\n";
+        // No kerf key in the tree → decrypt direction.
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(
+            Value::String("password".into()),
+            Value::String("plaintext-secret".into()),
+        );
+        let out = FileFormat::Toml
+            .serialize_preserving(original, &Value::Mapping(map))
+            .unwrap();
+        assert!(out.contains("# keep me"), "{out}");
+        assert!(out.contains("\"plaintext-secret\""), "{out}");
+        assert!(!out.contains("[kerf]"), "kerf table must be removed:\n{out}");
     }
 
     #[test]

@@ -50,6 +50,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 toml = { version = "0.8", features = ["preserve_order"] }
+# Comment/whitespace-preserving TOML editor (SPEC § 11.1). Already in the tree
+# transitively via `toml` 0.8, so this adds no new supply-chain surface.
+toml_edit = "0.22"
 
 # Encoding + matching
 base64 = "0.22"
