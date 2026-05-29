@@ -53,6 +53,9 @@ toml = { version = "0.8", features = ["preserve_order"] }
 # Comment/whitespace-preserving TOML editor (SPEC § 11.1). Already in the tree
 # transitively via `toml` 0.8, so this adds no new supply-chain surface.
 toml_edit = "0.22"
+# Span-aware YAML event parser (SPEC § 11.1). `serde_yaml` discards the byte
+# positions needed to splice changed values without reserializing the document.
+saphyr-parser = "0.0.6"
 
 # Encoding + matching
 base64 = "0.22"

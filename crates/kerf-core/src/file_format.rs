@@ -6,10 +6,16 @@
 //! care about. Each format owns its own parse/serialize via the native serde
 //! crate, converting to and from the shared internal tree.
 //!
+//! Comments and whitespace **are** preserved across a round trip via
+//! [`FileFormat::serialize_preserving`] (SPEC § 11.1): `parse` still discards
+//! comments into the value model, but the preserving serializer patches the
+//! *original* text in place — replacing only changed scalar spans — so
+//! comments, blank lines, key order, and quoting survive. The plain
+//! [`FileFormat::serialize`] remains normalized output for callers that have
+//! no original to preserve.
+//!
 //! Known fidelity limitations (documented, not bugs):
 //!
-//! - **Comments are not preserved** in any format (the serde value model
-//!   discards them on parse).
 //! - **TOML datetimes** round-trip as strings — kerf has no datetime type
 //!   and never needs one, since encrypted values are always strings.
 //! - **TOML output groups scalars before sub-tables** at each level. This is
@@ -143,9 +149,9 @@ impl FileFormat {
         match self {
             Self::Env => env_serialize_preserving(original, tree),
             Self::Toml => toml_serialize_preserving(original, tree),
-            // YAML lands in a follow-up commit; JSON has no comments. Until
-            // then these match the normalized path (today's behaviour).
-            Self::Yaml | Self::Json => self.serialize(tree),
+            Self::Yaml => yaml_serialize_preserving(original, tree),
+            // JSON has no comments; normalized output is already faithful.
+            Self::Json => self.serialize(tree),
         }
     }
 
@@ -370,6 +376,261 @@ fn reorder_values_before_tables(v: &mut toml::Value) {
             }
         }
         _ => {}
+    }
+}
+
+// ──── YAML (comment-preserving via span splicing) ─────────────────────────
+
+/// Comment/whitespace-preserving YAML serializer (SPEC § 11.1).
+///
+/// `serde_yaml` discards comments, so instead of reserializing we splice: the
+/// original text is kept verbatim and only the byte spans of *changed* scalar
+/// values are replaced (`saphyr-parser` gives us those spans). The generated
+/// `kerf:` block — always last (see `embed_kerf_block`) — is appended, replaced,
+/// or dropped wholesale.
+///
+/// Two safety nets make a span bug impossible to ship as corrupt data:
+/// 1. Splicing is only attempted on ASCII input, where the parser's char
+///    offsets equal byte offsets.
+/// 2. The spliced result MUST re-parse to *exactly* `tree`; otherwise we fall
+///    back to the normalized serializer.
+fn yaml_serialize_preserving(original: &str, tree: &Value) -> Result<String> {
+    if original.is_ascii() {
+        if let Some(candidate) = yaml_splice(original, tree) {
+            if let Ok(reparsed) = serde_yaml::from_str::<Value>(&candidate) {
+                if &reparsed == tree {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+    // Not ASCII, structural change, or the splice didn't round-trip → normalize.
+    Ok(serde_yaml::to_string(tree)?)
+}
+
+/// One frame of the path state machine while walking parser events.
+enum YamlFrame {
+    /// Inside a mapping. `cur_key == None` means the next scalar is a key.
+    Map {
+        prefix: String,
+        cur_key: Option<String>,
+    },
+    /// Inside a sequence, at element `idx`.
+    Seq { prefix: String, idx: usize },
+}
+
+/// Attempt the splice. Returns `None` to signal "fall back to normalized"
+/// (alias/parse trouble, or a structural add/remove we won't splice).
+fn yaml_splice(original: &str, tree: &Value) -> Option<String> {
+    // Desired scalar leaves (path -> Value), excluding the kerf subtree.
+    let mut tree_leaves: std::collections::HashMap<String, Value> =
+        std::collections::HashMap::new();
+    let Value::Mapping(root) = tree else {
+        return None;
+    };
+    let tree_has_kerf = root
+        .iter()
+        .any(|(k, _)| matches!(k, Value::String(s) if s == crate::kerf_block::RESERVED_KEY));
+    for (k, v) in root {
+        if matches!(k, Value::String(s) if s == crate::kerf_block::RESERVED_KEY) {
+            continue;
+        }
+        yaml_collect_leaves(v, &yaml_key_string(k)?, &mut tree_leaves);
+    }
+
+    // Original scalar leaf spans + the kerf block's start offset (if any).
+    let (spans, kerf_start) = yaml_collect_spans(original)?;
+
+    // Structural guard: the data leaf paths must match exactly. Additions or
+    // deletions can't be spliced into arbitrary positions safely → fall back.
+    if spans.len() != tree_leaves.len() || !spans.keys().all(|p| tree_leaves.contains_key(p)) {
+        return None;
+    }
+
+    // Build splices for changed scalars (within the data region, before kerf).
+    let data_end = kerf_start.unwrap_or(original.len());
+    let mut splices: Vec<(usize, usize, String)> = Vec::new();
+    for (path, &(start, end)) in &spans {
+        if end > data_end {
+            return None; // a data leaf after the kerf block — unexpected layout.
+        }
+        let new_value = tree_leaves.get(path)?;
+        let rendered = yaml_render_scalar(new_value)?;
+        if original.get(start..end)? != rendered {
+            splices.push((start, end, rendered));
+        }
+    }
+
+    // Apply splices to the data region in descending order so offsets stay valid.
+    splices.sort_by_key(|s| std::cmp::Reverse(s.0));
+    let mut data = original[..data_end].to_string();
+    for (start, end, rendered) in splices {
+        if end > data.len() {
+            return None;
+        }
+        data.replace_range(start..end, &rendered);
+    }
+
+    // Re-attach (or drop) the kerf block.
+    if tree_has_kerf {
+        if !data.ends_with('\n') {
+            data.push('\n');
+        }
+        let kerf_value = root
+            .iter()
+            .find(|(k, _)| matches!(k, Value::String(s) if s == crate::kerf_block::RESERVED_KEY))
+            .map(|(_, v)| v)?;
+        let mut block_map = serde_yaml::Mapping::new();
+        block_map.insert(
+            Value::String(crate::kerf_block::RESERVED_KEY.into()),
+            kerf_value.clone(),
+        );
+        let rendered_block = serde_yaml::to_string(&Value::Mapping(block_map)).ok()?;
+        data.push_str(&rendered_block);
+    }
+    Some(data)
+}
+
+/// Render a scalar `Value` as it should appear in YAML (quoting handled by
+/// `serde_yaml`). Returns `None` for non-scalars.
+fn yaml_render_scalar(v: &Value) -> Option<String> {
+    match v {
+        Value::String(_) | Value::Bool(_) | Value::Number(_) | Value::Null => {
+            let s = serde_yaml::to_string(v).ok()?;
+            Some(s.trim_end_matches('\n').to_string())
+        }
+        _ => None,
+    }
+}
+
+/// Collect scalar leaves of a tree into `out` keyed by dotted path.
+fn yaml_collect_leaves(
+    value: &Value,
+    path: &str,
+    out: &mut std::collections::HashMap<String, Value>,
+) {
+    match value {
+        Value::Mapping(map) => {
+            for (k, v) in map {
+                let Some(key) = yaml_key_string(k) else {
+                    continue;
+                };
+                let child = if path.is_empty() {
+                    key
+                } else {
+                    format!("{path}.{key}")
+                };
+                yaml_collect_leaves(v, &child, out);
+            }
+        }
+        Value::Sequence(seq) => {
+            for (i, v) in seq.iter().enumerate() {
+                yaml_collect_leaves(v, &format!("{path}[{i}]"), out);
+            }
+        }
+        scalar => {
+            out.insert(path.to_string(), scalar.clone());
+        }
+    }
+}
+
+fn yaml_key_string(k: &Value) -> Option<String> {
+    match k {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Walk the parser events of `original`, returning the byte span of every
+/// scalar *value* leaf (keyed by dotted path, excluding the kerf subtree) and
+/// the start offset of the top-level `kerf` key if present. Returns `None` on
+/// an alias or parse error (we won't risk splicing those).
+#[allow(clippy::type_complexity)]
+fn yaml_collect_spans(
+    original: &str,
+) -> Option<(
+    std::collections::HashMap<String, (usize, usize)>,
+    Option<usize>,
+)> {
+    use saphyr_parser::{Event, Parser};
+
+    let mut spans: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+    let mut kerf_start: Option<usize> = None;
+    let mut stack: Vec<YamlFrame> = Vec::new();
+
+    for item in Parser::new_from_str(original) {
+        let (event, span) = item.ok()?;
+        match event {
+            Event::MappingStart(..) => {
+                let prefix = yaml_value_path(&stack);
+                stack.push(YamlFrame::Map {
+                    prefix,
+                    cur_key: None,
+                });
+            }
+            Event::SequenceStart(..) => {
+                let prefix = yaml_value_path(&stack);
+                stack.push(YamlFrame::Seq { prefix, idx: 0 });
+            }
+            Event::MappingEnd | Event::SequenceEnd => {
+                stack.pop();
+                yaml_advance(&mut stack);
+            }
+            Event::Scalar(s, _style, _anchor, _tag) => {
+                let is_key = matches!(stack.last(), Some(YamlFrame::Map { cur_key: None, .. }));
+                if is_key {
+                    // Top-level `kerf` key marks the start of the metadata block.
+                    if stack.len() == 1 && s.as_ref() == crate::kerf_block::RESERVED_KEY {
+                        kerf_start = Some(span.start.index());
+                    }
+                    if let Some(YamlFrame::Map { cur_key, .. }) = stack.last_mut() {
+                        *cur_key = Some(s.into_owned());
+                    }
+                } else {
+                    let path = yaml_value_path(&stack);
+                    // Skip scalars inside the kerf block; it's handled wholesale.
+                    if path != crate::kerf_block::RESERVED_KEY
+                        && !path.starts_with(&format!("{}.", crate::kerf_block::RESERVED_KEY))
+                    {
+                        spans.insert(path, (span.start.index(), span.end.index()));
+                    }
+                    yaml_advance(&mut stack);
+                }
+            }
+            Event::Alias(_) => return None,
+            _ => {}
+        }
+    }
+    Some((spans, kerf_start))
+}
+
+/// Path of the value currently being read, from the top frame.
+fn yaml_value_path(stack: &[YamlFrame]) -> String {
+    match stack.last() {
+        Some(YamlFrame::Map {
+            prefix,
+            cur_key: Some(k),
+        }) => {
+            if prefix.is_empty() {
+                k.clone()
+            } else {
+                format!("{prefix}.{k}")
+            }
+        }
+        Some(YamlFrame::Seq { prefix, idx }) => format!("{prefix}[{idx}]"),
+        _ => String::new(),
+    }
+}
+
+/// Advance the top frame after a value is fully consumed.
+fn yaml_advance(stack: &mut [YamlFrame]) {
+    match stack.last_mut() {
+        Some(YamlFrame::Map { cur_key, .. }) => *cur_key = None,
+        Some(YamlFrame::Seq { idx, .. }) => *idx += 1,
+        None => {}
     }
 }
 
@@ -1140,6 +1401,54 @@ mod tests {
     }
 
     #[test]
+    fn yaml_preserving_keeps_comments_and_changes_only_secret() {
+        let original = "# top comment\ndb:\n  host: db.local   # inline\n  password: hunter2\n";
+        let tree: Value = serde_yaml::from_str(
+            "db:\n  host: db.local\n  password: ENC[AES-GCM,n:x,c:y,t:z]\nkerf:\n  version: 1\n  cipher: aes-256-gcm\n  recipients:\n  - type: age\n    recipient: age1abc\n    encrypted_dek: AA==\n  encrypted_regex: \"^(password)$\"\n",
+        )
+        .unwrap();
+        let out = FileFormat::Yaml
+            .serialize_preserving(original, &tree)
+            .unwrap();
+        assert!(out.contains("# top comment"), "{out}");
+        assert!(out.contains("host: db.local   # inline"), "{out}");
+        assert!(out.contains("ENC[AES-GCM,n:x,c:y,t:z]"), "{out}");
+        assert!(!out.contains("hunter2"), "old secret gone:\n{out}");
+        assert!(out.contains("kerf:"), "{out}");
+        // The spliced output must round-trip to exactly the intended tree.
+        assert_eq!(serde_yaml::from_str::<Value>(&out).unwrap(), tree);
+    }
+
+    #[test]
+    fn yaml_preserving_decrypt_removes_kerf_and_restores_value() {
+        let original = "# keep me\ndb:\n  password: ENC[AES-GCM,n:x,c:y,t:z]   # note\nkerf:\n  version: 1\n  cipher: aes-256-gcm\n";
+        let tree: Value = serde_yaml::from_str("db:\n  password: plaintext-secret\n").unwrap();
+        let out = FileFormat::Yaml
+            .serialize_preserving(original, &tree)
+            .unwrap();
+        assert!(out.contains("# keep me"), "{out}");
+        assert!(out.contains("password: plaintext-secret"), "{out}");
+        assert!(out.contains("# note"), "inline comment kept:\n{out}");
+        assert!(!out.contains("kerf:"), "kerf block removed:\n{out}");
+        assert_eq!(serde_yaml::from_str::<Value>(&out).unwrap(), tree);
+    }
+
+    #[test]
+    fn yaml_preserving_non_ascii_falls_back_but_stays_correct() {
+        // Splicing is gated on ASCII; a non-ASCII file falls back to the
+        // normalized serializer, which must still produce exactly the tree.
+        let original = "note: caf\u{e9}\npassword: old\n";
+        let tree: Value = serde_yaml::from_str(
+            "note: caf\u{e9}\npassword: ENC[AES-GCM,n:x,c:y,t:z]\nkerf:\n  version: 1\n  cipher: aes-256-gcm\n  recipients:\n  - type: age\n    recipient: age1abc\n    encrypted_dek: AA==\n  encrypted_regex: \"^(password)$\"\n",
+        )
+        .unwrap();
+        let out = FileFormat::Yaml
+            .serialize_preserving(original, &tree)
+            .unwrap();
+        assert_eq!(serde_yaml::from_str::<Value>(&out).unwrap(), tree);
+    }
+
+    #[test]
     fn toml_preserving_keeps_comments_and_changes_only_secret() {
         let original = "# top comment\nport = 8080   # inline\n\n[db]\n# secret below\npassword = \"old\"\nhost = \"db.local\"\n";
         let mut block = serde_yaml::Mapping::new();
@@ -1183,7 +1492,10 @@ mod tests {
             .unwrap();
         assert!(out.contains("# keep me"), "{out}");
         assert!(out.contains("\"plaintext-secret\""), "{out}");
-        assert!(!out.contains("[kerf]"), "kerf table must be removed:\n{out}");
+        assert!(
+            !out.contains("[kerf]"),
+            "kerf table must be removed:\n{out}"
+        );
     }
 
     #[test]

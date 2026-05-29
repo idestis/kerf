@@ -26,7 +26,7 @@ What's done and what's next. The full porcelain surface is implemented: `init`, 
 
 ### Formats
 - [x] YAML, JSON, TOML, ENV (dotenv)
-- [ ] Comment / whitespace preservation on round-trip (currently normalized)
+- [x] Comment / whitespace preservation on round-trip (YAML, TOML, ENV; JSON has no comments)
 - [ ] INI
 
 ### Recipients

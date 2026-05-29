@@ -1,12 +1,13 @@
 //! YAML format support — walk, encrypt, decrypt.
 //!
-//! v0.1 limitations (tracked in CLAUDE.md):
+//! Notes:
 //!
 //! - Key order is preserved (via `serde_yaml::Mapping`'s `IndexMap` backing).
-//! - Comments are NOT preserved across a round trip. `serde_yaml` strips them
-//!   on parse. Real format preservation needs a different parser; this is a
-//!   known v0.1 limitation, not a missed requirement.
-//! - Quoting style is normalized to whatever `serde_yaml` emits.
+//! - Comments, whitespace, and quoting survive a round trip through
+//!   [`crate::FileFormat::serialize_preserving`], which patches the original
+//!   text rather than reserializing the value model (SPEC § 11.1). This
+//!   `walk_*` layer operates on the value tree; the preserving serializer
+//!   reconciles that tree back against the original bytes.
 
 use std::collections::HashMap;
 
