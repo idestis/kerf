@@ -11,6 +11,8 @@
 #![warn(missing_docs)]
 
 pub mod age;
+#[cfg(feature = "aws-kms")]
+pub mod aws;
 mod error;
 pub mod recipient;
 

@@ -16,6 +16,10 @@ categories.workspace = true
 name = "kerf"
 path = "src/main.rs"
 
+[features]
+default = ["aws-kms"]
+aws-kms = ["kerf-kms/aws-kms"]
+
 [dependencies]
 kerf-core  = { workspace = true }
 kerf-kms   = { workspace = true }

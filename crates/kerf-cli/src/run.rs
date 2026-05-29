@@ -152,12 +152,15 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
     // recipient entries match what we'd wrap now, copy them verbatim so
     // the on-disk `encrypted_dek` bytes are byte-identical too.
     let entries: Vec<RecipientEntry> = match existing_entries.as_ref() {
-        Some(prev_entries) if recipients_match(prev_entries, &resolved.age) => {
-            prev_entries.clone()
-        }
+        Some(prev_entries) if recipients_match(prev_entries, &resolved) => prev_entries.clone(),
         _ => {
             let mut fresh = Vec::with_capacity(resolved.age.len());
             for recipient in &resolved.age {
+                let wrapped = recipient.wrap(&dek)?;
+                fresh.push(recipient.entry(&wrapped));
+            }
+            #[cfg(feature = "aws-kms")]
+            for recipient in &resolved.aws_kms {
                 let wrapped = recipient.wrap(&dek)?;
                 fresh.push(recipient.entry(&wrapped));
             }
@@ -166,12 +169,10 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
     };
     if !resolved.unsupported.is_empty() {
         let kinds: Vec<&str> = resolved.unsupported.iter().map(|u| u.kind).collect();
-        return Err(CliError::Unimplemented).map_err(|_| {
-            CliError::Other(format!(
-                "recipients {kinds:?} are accepted at the CLI but not yet implemented \
-                 — v0.1 supports --age only"
-            ))
-        });
+        return Err(CliError::Other(format!(
+            "recipients {kinds:?} are accepted at the CLI but not yet implemented \
+             — v0.1 supports --age and --kms"
+        )));
     }
 
     let encrypted = kerf_core::encrypt(plain, &dek, &regex, entries, previous.as_ref())?;
@@ -186,9 +187,6 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
 
 pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
     let identity = ResolvedIdentity::resolve(&args.identity)?;
-    let age_identity = identity
-        .age
-        .ok_or_else(|| CliError::NoRecipient("no age identity resolved".into()))?;
     let format = resolve_format(&args.file, args.format.as_deref())?;
 
     let raw = read(&args.file)?;
@@ -196,21 +194,12 @@ pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
         CliError::BadInput(format!("{} parse {}: {e}", format.name(), args.file.display()))
     })?;
 
-    // Probe the kerf block once to find a recipient our identity can unwrap.
-    // We then re-parse the original bytes so the engine sees the block intact.
+    // Probe the kerf block once to find a recipient any of our identities
+    // can unwrap.
     let dek = {
         let mut probe = tree.clone();
         let block = kerf_core::engine::extract_kerf_block(&mut probe)?;
-        let entry = block
-            .recipients
-            .iter()
-            .find(|e| age_identity.can_unwrap(e))
-            .ok_or_else(|| {
-                CliError::NoRecipient(
-                    "file has no age recipient that this identity can unwrap".into(),
-                )
-            })?;
-        age_identity.unwrap(entry)?
+        unwrap_any(&block.recipients, &identity)?
     };
 
     // engine::decrypt extracts the block, verifies the MAC against the
@@ -273,39 +262,83 @@ fn try_unwrap_for_diff(
         identity_file: None,
     })
     .map_err(|e| e.to_string())?;
-    let age_identity = identity
-        .age
-        .ok_or_else(|| "no age identity in env".to_string())?;
-    let entry = block
-        .recipients
-        .iter()
-        .find(|e| age_identity.can_unwrap(e))
-        .ok_or_else(|| "no matching age recipient in existing file".to_string())?;
-    let dek = age_identity.unwrap(entry).map_err(|e| e.to_string())?;
-
+    let dek = unwrap_any(&block.recipients, &identity).map_err(|e| e.to_string())?;
     let previous = snapshot_previous(existing, &dek).map_err(|e| e.to_string())?;
     Ok((dek, previous, block.recipients))
 }
 
 /// True iff the on-disk recipient set is exactly the set we'd produce now.
-/// For age, identifier is the `age1…` recipient string. For other backends
-/// (none implemented yet), we'd compare on the relevant identifier (ARN,
-/// resource ID, key URL).
-fn recipients_match(
-    existing: &[RecipientEntry],
-    age: &[kerf_kms::age::AgeRecipient],
-) -> bool {
-    let existing_age: Vec<&str> = existing
-        .iter()
-        .filter_map(|e| match e {
-            RecipientEntry::Age { recipient, .. } => Some(recipient.as_str()),
-            _ => None,
-        })
-        .collect();
-    let proposed_age: Vec<&str> = age.iter().map(kerf_kms::age::AgeRecipient::spec).collect();
-    // Only matches if it's the same set, no extras, no missing.
-    existing.len() == existing_age.len()
-        && proposed_age.len() == existing_age.len()
-        && existing_age.iter().all(|r| proposed_age.contains(r))
-        && proposed_age.iter().all(|r| existing_age.contains(r))
+/// Match key per backend: age recipient string, AWS KMS ARN, …
+fn recipients_match(existing: &[RecipientEntry], resolved: &ResolvedRecipients) -> bool {
+    let mut existing_age: Vec<&str> = Vec::new();
+    let mut existing_aws: Vec<&str> = Vec::new();
+    let mut existing_other: usize = 0;
+    for entry in existing {
+        match entry {
+            RecipientEntry::Age { recipient, .. } => existing_age.push(recipient),
+            RecipientEntry::AwsKms { arn, .. } => existing_aws.push(arn),
+            _ => existing_other += 1,
+        }
+    }
+    if existing_other != 0 {
+        return false;
+    }
+    let proposed_age: Vec<&str> = resolved.age.iter().map(kerf_kms::age::AgeRecipient::spec).collect();
+    if !same_set(&existing_age, &proposed_age) {
+        return false;
+    }
+    #[cfg(feature = "aws-kms")]
+    {
+        let proposed_aws: Vec<&str> = resolved
+            .aws_kms
+            .iter()
+            .map(kerf_kms::aws::AwsKmsRecipient::arn)
+            .collect();
+        if !same_set(&existing_aws, &proposed_aws) {
+            return false;
+        }
+    }
+    #[cfg(not(feature = "aws-kms"))]
+    {
+        if !existing_aws.is_empty() {
+            return false;
+        }
+    }
+    true
+}
+
+fn same_set(a: &[&str], b: &[&str]) -> bool {
+    a.len() == b.len() && a.iter().all(|x| b.contains(x)) && b.iter().all(|x| a.contains(x))
+}
+
+/// Try every available identity against the recipient list. Returns the
+/// DEK from the first successful unwrap. Errors with exit-10 NoRecipient
+/// if none match.
+fn unwrap_any(recipients: &[RecipientEntry], identity: &ResolvedIdentity) -> Result<Dek, CliError> {
+    let mut last_error: Option<String> = None;
+    for entry in recipients {
+        if let Some(age) = &identity.age {
+            if age.can_unwrap(entry) {
+                match age.unwrap(entry) {
+                    Ok(dek) => return Ok(dek),
+                    Err(e) => last_error = Some(format!("age unwrap: {e}")),
+                }
+            }
+        }
+        #[cfg(feature = "aws-kms")]
+        if let Some(aws) = &identity.aws_kms {
+            if aws.can_unwrap(entry) {
+                match aws.unwrap(entry) {
+                    Ok(dek) => return Ok(dek),
+                    Err(e) => last_error = Some(format!("aws unwrap: {e}")),
+                }
+            }
+        }
+    }
+    Err(CliError::NoRecipient(format!(
+        "no configured identity matched any recipient in the file{}",
+        last_error
+            .map(|e| format!(" (last error: {e})"))
+            .unwrap_or_default()
+    )))
 }

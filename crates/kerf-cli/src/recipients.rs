@@ -9,9 +9,12 @@
 //! SOPS-prefixed env vars are honoured as fallback so existing SOPS users
 //! can keep their shell setup unchanged.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use kerf_kms::age::{AgeIdentity, AgeRecipient};
+#[cfg(feature = "aws-kms")]
+use kerf_kms::aws::{AwsKmsIdentity, AwsKmsRecipient};
 
 use crate::{CliError, IdentityFlags, RecipientFlags};
 
@@ -19,7 +22,12 @@ use crate::{CliError, IdentityFlags, RecipientFlags};
 pub struct ResolvedRecipients {
     /// Real age recipients we'll actually use to wrap the DEK.
     pub age: Vec<AgeRecipient>,
-    /// Other backends, recorded but errored on use until impls land.
+    /// AWS KMS recipients (one per --kms ARN). Empty when the `aws-kms`
+    /// feature is disabled at compile time.
+    #[cfg(feature = "aws-kms")]
+    pub aws_kms: Vec<AwsKmsRecipient>,
+    /// Other backends still pending implementation. Surfaced so the CLI
+    /// can hard-error on use rather than silently dropping the flag.
     pub unsupported: Vec<UnsupportedRecipient>,
 }
 
@@ -48,8 +56,25 @@ impl ResolvedRecipients {
             })?);
         }
 
+        #[cfg(feature = "aws-kms")]
+        let aws_kms = {
+            // Per-recipient encryption context isn't surfaced as a CLI flag
+            // in v0.1; deferred until --kms-context lands. Empty map for now.
+            let context = BTreeMap::new();
+            let mut out = Vec::with_capacity(kms_specs.len());
+            for spec in &kms_specs {
+                out.push(AwsKmsRecipient::parse(spec, context.clone()).map_err(|e| {
+                    CliError::Usage(format!("invalid AWS KMS recipient {spec:?}: {e}"))
+                })?);
+            }
+            out
+        };
+        #[cfg(not(feature = "aws-kms"))]
+        let aws_kms_specs = kms_specs.clone();
+
         let mut unsupported = Vec::new();
-        for spec in kms_specs {
+        #[cfg(not(feature = "aws-kms"))]
+        for spec in aws_kms_specs {
             unsupported.push(UnsupportedRecipient {
                 kind: "aws-kms",
                 spec,
@@ -68,60 +93,88 @@ impl ResolvedRecipients {
             });
         }
 
-        if age.is_empty() && unsupported.is_empty() {
+        #[cfg(feature = "aws-kms")]
+        let any_real = !age.is_empty() || !aws_kms.is_empty();
+        #[cfg(not(feature = "aws-kms"))]
+        let any_real = !age.is_empty();
+
+        if !any_real && unsupported.is_empty() {
             return Err(CliError::NoRecipient(
                 "pass --age (or --kms/--gcp-kms/--azure-kv, when supported), \
-                 or set KERF_AGE_RECIPIENTS / SOPS_AGE_RECIPIENTS"
+                 or set KERF_AGE_RECIPIENTS / KERF_KMS_ARN / SOPS_AGE_RECIPIENTS / SOPS_KMS_ARN"
                     .into(),
             ));
         }
-        if age.is_empty() {
+        if !any_real {
             return Err(CliError::Unimplemented);
         }
-        Ok(Self { age, unsupported })
+        Ok(Self {
+            age,
+            #[cfg(feature = "aws-kms")]
+            aws_kms,
+            unsupported,
+        })
     }
 }
 
-/// Resolved decryption identity. v0.1 supports only an age identity loaded
-/// from a file or pasted into an env var.
+/// Resolved decryption identity — one or both of an age identity and an
+/// AWS KMS identity may be set. Decrypt walks the file's recipient list
+/// and tries the first one that matches an available identity.
 pub struct ResolvedIdentity {
     pub age: Option<AgeIdentity>,
+    #[cfg(feature = "aws-kms")]
+    pub aws_kms: Option<AwsKmsIdentity>,
 }
 
 impl ResolvedIdentity {
+    /// Build whatever identities we can from the environment.
+    ///
+    /// We're permissive here: if AWS credentials are present, build an
+    /// AWS identity; if an age key is reachable, build an age identity.
+    /// The caller (decrypt path) picks whichever matches a recipient in
+    /// the file. Missing both is only an error if the file requires one.
     pub fn resolve(flags: &IdentityFlags) -> Result<Self, CliError> {
-        // 1. --identity-file flag
-        if let Some(path) = &flags.identity_file {
-            return Ok(Self {
-                age: Some(AgeIdentity::from_file(path)?),
-            });
-        }
-        // 2. KERF_AGE_KEY_FILE → SOPS_AGE_KEY_FILE
-        for env in ["KERF_AGE_KEY_FILE", "SOPS_AGE_KEY_FILE"] {
-            if let Ok(path) = std::env::var(env) {
-                if !path.is_empty() {
-                    return Ok(Self {
-                        age: Some(AgeIdentity::from_file(&PathBuf::from(path))?),
-                    });
-                }
-            }
-        }
-        // 3. KERF_AGE_KEY → SOPS_AGE_KEY (inline)
-        for env in ["KERF_AGE_KEY", "SOPS_AGE_KEY"] {
-            if let Ok(key) = std::env::var(env) {
-                if !key.is_empty() {
-                    return Ok(Self {
-                        age: Some(AgeIdentity::parse(&key)?),
-                    });
-                }
-            }
-        }
-        Err(CliError::NoRecipient(
-            "no decryption identity — pass --identity-file or set \
-             KERF_AGE_KEY_FILE / SOPS_AGE_KEY_FILE / KERF_AGE_KEY / SOPS_AGE_KEY"
-                .into(),
-        ))
+        let age = resolve_age_identity(flags)?;
+        #[cfg(feature = "aws-kms")]
+        let aws_kms = resolve_aws_identity();
+        Ok(Self {
+            age,
+            #[cfg(feature = "aws-kms")]
+            aws_kms,
+        })
     }
+}
+
+fn resolve_age_identity(flags: &IdentityFlags) -> Result<Option<AgeIdentity>, CliError> {
+    if let Some(path) = &flags.identity_file {
+        return Ok(Some(AgeIdentity::from_file(path)?));
+    }
+    for env in ["KERF_AGE_KEY_FILE", "SOPS_AGE_KEY_FILE"] {
+        if let Ok(path) = std::env::var(env) {
+            if !path.is_empty() {
+                return Ok(Some(AgeIdentity::from_file(&PathBuf::from(path))?));
+            }
+        }
+    }
+    for env in ["KERF_AGE_KEY", "SOPS_AGE_KEY"] {
+        if let Ok(key) = std::env::var(env) {
+            if !key.is_empty() {
+                return Ok(Some(AgeIdentity::parse(&key)?));
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(feature = "aws-kms")]
+fn resolve_aws_identity() -> Option<AwsKmsIdentity> {
+    // The SDK's default chain handles env / profile / IAM role discovery.
+    // We only need a region hint to build the initial client; the actual
+    // region for each Decrypt call is taken from the entry's ARN.
+    let region = std::env::var("AWS_REGION")
+        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+        .unwrap_or_else(|_| "us-east-1".to_string());
+    Some(AwsKmsIdentity::new(&region))
 }
 
 /// Pick a list of comma-separated specs from CLI flags first, falling back

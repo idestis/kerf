@@ -48,7 +48,7 @@ pub struct RecipientFlags {
     #[arg(long = "age", value_name = "RECIPIENT")]
     pub age: Vec<String>,
 
-    /// AWS KMS key ARN. May be repeated. Not yet implemented in v0.1.
+    /// AWS KMS key ARN. May be repeated.
     #[arg(long = "kms", value_name = "ARN")]
     pub kms: Vec<String>,
 
