@@ -37,7 +37,10 @@ pub struct VerifyArgs {
 /// Pick the on-disk format for a path: explicit --format override > extension
 /// detection > error. We don't default to YAML silently because doing so on
 /// an unrecognized extension would silently mis-parse the file.
-fn resolve_format(path: &Path, override_name: Option<&str>) -> Result<FileFormat, CliError> {
+pub(crate) fn resolve_format(
+    path: &Path,
+    override_name: Option<&str>,
+) -> Result<FileFormat, CliError> {
     if let Some(name) = override_name {
         return match name.to_ascii_lowercase().as_str() {
             "yaml" | "yml" => Ok(FileFormat::Yaml),
@@ -267,6 +270,39 @@ pub fn verify(args: VerifyArgs) -> Result<(), CliError> {
     let count = kerf_core::engine::verify(tree, &dek)?;
     eprintln!(
         "kerf: {} OK — {count} encrypted value(s), MAC verified",
+        args.file.display()
+    );
+    Ok(())
+}
+
+/// `kerf mac --verify <file>` (SPEC § 7.5) — verify the whole-file MAC.
+///
+/// Provided for scripting symmetry with SOPS. Note the MAC is computed over
+/// the *plaintext* leaves (SPEC § 4.5), so verifying it necessarily opens
+/// every `ENC[...]` envelope — there is no cheaper MAC-only path in this
+/// construction. The recovered plaintext is dropped, never returned.
+pub fn mac_verify(args: VerifyArgs) -> Result<(), CliError> {
+    let identity = ResolvedIdentity::resolve(&args.identity)?;
+    let format = resolve_format(&args.file, args.format.as_deref())?;
+
+    let raw = read(&args.file)?;
+    let tree: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!(
+            "{} parse {}: {e}",
+            format.name(),
+            args.file.display()
+        ))
+    })?;
+
+    let dek = {
+        let mut probe = tree.clone();
+        let block = kerf_core::engine::extract_kerf_block(&mut probe)?;
+        unwrap_any(&block.recipients, &identity)?
+    };
+
+    let count = kerf_core::engine::verify(tree, &dek)?;
+    eprintln!(
+        "kerf: {} MAC OK ({count} encrypted value(s))",
         args.file.display()
     );
     Ok(())

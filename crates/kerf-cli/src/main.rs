@@ -21,6 +21,7 @@ mod exit {
 
 mod config;
 mod io;
+mod plumbing;
 mod recipients;
 mod run;
 
@@ -148,6 +149,46 @@ enum Command {
         #[arg(short, long, value_name = "PATH")]
         output: PathBuf,
     },
+    /// [plumbing] Print the `kerf:` block (without DEKs) as JSON.
+    Metadata {
+        /// Encrypted file.
+        file: PathBuf,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+    },
+    /// [plumbing] Print the recipient list (without DEKs) as JSON.
+    Recipients {
+        /// Encrypted file.
+        file: PathBuf,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+    },
+    /// [plumbing] Exit 0 if `path`'s leaf key is encrypted per the file's
+    /// regex, exit 1 otherwise. Quiet — the exit code is the signal.
+    PathEncrypted {
+        /// Encrypted file.
+        file: PathBuf,
+        /// Dotted path to test (e.g. `db.password`).
+        path: String,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+    },
+    /// [plumbing] Whole-file MAC operations.
+    Mac {
+        /// Encrypted file.
+        file: PathBuf,
+        /// Verify the MAC. Currently the only mode; required.
+        #[arg(long)]
+        verify: bool,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        #[command(flatten)]
+        identity: IdentityFlags,
+    },
 }
 
 fn main() -> ExitCode {
@@ -204,10 +245,34 @@ fn main() -> ExitCode {
             encrypted_regex,
             mac_all,
         }),
+        Command::Metadata { file, format } => plumbing::metadata(file, format),
+        Command::Recipients { file, format } => plumbing::recipients(file, format),
+        Command::PathEncrypted { file, path, format } => {
+            plumbing::path_encrypted(file, path, format)
+        }
+        Command::Mac {
+            file,
+            verify,
+            format,
+            identity,
+        } => {
+            if verify {
+                run::mac_verify(run::VerifyArgs {
+                    file,
+                    format,
+                    identity,
+                })
+            } else {
+                Err(CliError::Usage("kerf mac requires --verify".into()))
+            }
+        }
     };
 
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        // Predicate commands (e.g. path-encrypted) signal a clean "false" via
+        // exit 1 with no diagnostic — the exit code is the contract.
+        Err(CliError::Predicate) => ExitCode::from(1),
         Err(err) => {
             eprintln!("kerf: {err}");
             ExitCode::from(err.exit_code())
@@ -237,6 +302,11 @@ pub enum CliError {
     #[error("not yet implemented")]
     Unimplemented,
 
+    /// A predicate plumbing command (e.g. `path-encrypted`) returned false.
+    /// Maps to exit 1 with no message — the exit code is the signal.
+    #[error("")]
+    Predicate,
+
     #[error("{0}")]
     Usage(String),
 
@@ -262,7 +332,7 @@ pub enum CliError {
 impl CliError {
     fn exit_code(&self) -> u8 {
         match self {
-            Self::Unimplemented | Self::Other(_) => exit::GENERIC,
+            Self::Unimplemented | Self::Other(_) | Self::Predicate => exit::GENERIC,
             Self::Usage(_) => exit::USAGE,
             Self::BadInput(_) => exit::BAD_INPUT,
             Self::NoRecipient(_) => exit::NO_RECIPIENT,
