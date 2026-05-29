@@ -16,7 +16,7 @@ Recipient backends are cargo features (`aws-kms` on by default; `gcp-kms`, `azur
 
 ## Roadmap
 
-What's done and what's next. Implemented commands today: `init`, `encrypt`, `decrypt`, `verify`, `keygen`, `view`, `set`, `unset`, `rotate`, `keys`, and the plumbing set (`metadata`, `recipients`, `mac --verify`, `path-encrypted`).
+What's done and what's next. The full porcelain surface is implemented: `init`, `encrypt`, `decrypt`, `verify`, `keygen`, `edit`, `view`, `diff`, `set`, `unset`, `exec`, `rotate`, `keys`, plus the plumbing set (`metadata`, `recipients`, `mac --verify`, `path-encrypted`).
 
 ### Core / crypto
 - [x] Diff-aware encrypt with the byte-identity rule
@@ -40,11 +40,11 @@ What's done and what's next. Implemented commands today: `init`, `encrypt`, `dec
 - [x] `kerf init` — write `.kerf.yaml` creation rules
 - [x] `kerf verify` — MAC + AAD check, no plaintext output (exit codes per SPEC § 7.6)
 - [x] `kerf rotate` — fresh DEK, re-encrypt every value, re-wrap
-- [ ] `kerf edit` — decrypt → `$EDITOR` → minimal-diff re-encrypt, in memory
-- [ ] `kerf exec -- <cmd>` — decrypt into child env, no plaintext on disk
+- [x] `kerf edit` — decrypt → `$EDITOR` → minimal-diff re-encrypt, scratch wiped on exit
+- [x] `kerf exec -- <cmd>` — decrypt into child env, no plaintext on disk
 - [x] `kerf set` / `kerf unset` — scripted single-value mutations (`set` reads from `--stdin`)
 - [x] `kerf view` — read-only inspection (whole file or one `--path`)
-- [ ] `kerf diff` — plaintext diff of two encrypted files
+- [x] `kerf diff` — plaintext diff of two encrypted files (redacted unless `--show-values`)
 - [x] `kerf keys add` / `remove` / `list` — recipient management without DEK rotation
 - [x] Plumbing commands (`recipients`, `metadata`, `mac --verify`, `path-encrypted`)
 
