@@ -20,6 +20,7 @@ mod exit {
 }
 
 mod config;
+mod diff;
 mod io;
 mod keys;
 mod path;
@@ -171,6 +172,20 @@ enum Command {
     Keys {
         #[command(subcommand)]
         command: KeysCommand,
+    },
+    /// Decrypt two files and show their plaintext diff at the path level.
+    /// Values are redacted unless --show-values.
+    Diff {
+        /// The older encrypted file.
+        old: PathBuf,
+        /// The newer encrypted file.
+        new: PathBuf,
+        /// Reveal plaintext values in the diff (default: redacted).
+        #[arg(long)]
+        show_values: bool,
+        /// Force the file format for both files (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
     },
     /// Read-only decrypt to stdout. With --path, print just one value.
     View {
@@ -341,6 +356,18 @@ fn main() -> ExitCode {
             file,
             format,
             reason,
+            identity,
+        }),
+        Command::Diff {
+            old,
+            new,
+            show_values,
+            format,
+        } => diff::diff(diff::DiffArgs {
+            old,
+            new,
+            show_values,
+            format,
             identity,
         }),
         Command::Keys { command } => match command {
