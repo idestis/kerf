@@ -355,6 +355,160 @@ pub fn mac_verify(args: VerifyArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+pub struct EditArgs {
+    pub file: PathBuf,
+    pub format: Option<String>,
+    pub identity: IdentityFlags,
+}
+
+/// `kerf edit <file>` (SPEC § 7.1) — decrypt, open `$EDITOR`, then diff-aware
+/// re-encrypt on save. Atomic.
+///
+/// The plaintext is handed to the editor through a scratch file created `0600`
+/// on a RAM-backed filesystem when one is available (`/dev/shm`), and that
+/// file is zeroed and unlinked on every exit path by [`ScratchFile`]'s drop
+/// (SPEC § 11.2 — no plaintext left on disk). Re-encryption reuses the existing
+/// DEK, recipients, and regex with a previous-file snapshot, so editing one
+/// value yields a one-line diff.
+pub fn edit(args: EditArgs) -> Result<(), CliError> {
+    let identity = ResolvedIdentity::resolve(&args.identity)?;
+    let format = resolve_format(&args.file, args.format.as_deref())?;
+
+    let raw = read(&args.file)?;
+    let tree: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!(
+            "{} parse {}: {e}",
+            format.name(),
+            args.file.display()
+        ))
+    })?;
+
+    let block = {
+        let mut probe = tree.clone();
+        kerf_core::engine::extract_kerf_block(&mut probe)?
+    };
+    let dek = unwrap_any(&block.recipients, &identity)?;
+    let previous = snapshot_previous(&tree, &dek)?;
+    let plain = kerf_core::decrypt(tree, &dek)?;
+    let original_text = format
+        .serialize(&plain)
+        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+
+    // Hand the plaintext to the editor via a scratch file that wipes itself.
+    let ext = args
+        .file
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("txt");
+    let scratch = ScratchFile::create(ext, original_text.as_bytes())?;
+    run_editor(&scratch.path)?;
+    let edited = read(&scratch.path)?;
+
+    if edited == original_text.as_bytes() {
+        eprintln!("kerf: no changes — {} left untouched", args.file.display());
+        return Ok(());
+    }
+
+    // Re-parse the edited text. A parse failure must NOT destroy the encrypted
+    // file — bail and let the scratch guard clean up.
+    let edited_tree: Value = format.parse(&edited).map_err(|e| {
+        CliError::BadInput(format!(
+            "edited content is not valid {}: {e}",
+            format.name()
+        ))
+    })?;
+
+    let regex = Regex::new(&block.encrypted_regex)
+        .map_err(|e| CliError::Other(format!("stored encrypted_regex is invalid: {e}")))?;
+    let encrypted =
+        kerf_core::encrypt(edited_tree, &dek, &regex, block.recipients, Some(&previous))?;
+    let serialized = format
+        .serialize(&encrypted)
+        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    atomic_write(&args.file, serialized.as_bytes())?;
+    eprintln!("kerf: wrote {}", args.file.display());
+    Ok(())
+}
+
+/// Resolve the editor command from `$KERF_EDITOR` → `$VISUAL` → `$EDITOR`.
+/// The value is whitespace-split so `"code --wait"` works; the scratch path is
+/// appended as the final argument.
+fn run_editor(path: &Path) -> Result<(), CliError> {
+    let mut chosen = None;
+    for var in ["KERF_EDITOR", "VISUAL", "EDITOR"] {
+        if let Ok(v) = std::env::var(var) {
+            if !v.trim().is_empty() {
+                chosen = Some(v);
+                break;
+            }
+        }
+    }
+    let editor = chosen.ok_or_else(|| {
+        CliError::Usage("no editor set — export $EDITOR (or $VISUAL / $KERF_EDITOR)".into())
+    })?;
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().expect("non-empty checked above");
+    let status = std::process::Command::new(program)
+        .args(parts)
+        .arg(path)
+        .status()
+        .map_err(|e| CliError::Other(format!("launch editor {program:?}: {e}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CliError::Usage(
+            "editor exited non-zero — aborting without saving".into(),
+        ))
+    }
+}
+
+/// A scratch plaintext file that zeroes and unlinks itself on drop. Created
+/// `0600` on a RAM-backed filesystem when available so the plaintext never
+/// touches persistent storage (best-effort; see SPEC § 3 on host side channels).
+struct ScratchFile {
+    path: PathBuf,
+}
+
+impl ScratchFile {
+    fn create(ext: &str, contents: &[u8]) -> Result<Self, CliError> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let name = format!(".kerf-edit.{}.{nanos:x}.{ext}", std::process::id());
+        let path = scratch_dir().join(name);
+        write_secret_file(&path, contents)?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for ScratchFile {
+    fn drop(&mut self) {
+        // Best-effort wipe: overwrite with zeros, then unlink. On CoW / SSD
+        // filesystems this isn't a guaranteed erase, but it removes the
+        // plaintext from the common read path.
+        if let Ok(meta) = std::fs::metadata(&self.path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&self.path) {
+                use std::io::Write;
+                let _ = f.write_all(&vec![0u8; meta.len() as usize]);
+                let _ = f.sync_all();
+            }
+        }
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Pick a directory for the scratch file, preferring a RAM-backed filesystem.
+fn scratch_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        let shm = Path::new("/dev/shm");
+        if shm.is_dir() {
+            return shm.to_path_buf();
+        }
+    }
+    std::env::temp_dir()
+}
+
 pub struct ExecArgs {
     pub file: PathBuf,
     pub format: Option<String>,

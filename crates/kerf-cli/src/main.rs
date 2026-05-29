@@ -173,6 +173,15 @@ enum Command {
         #[command(subcommand)]
         command: KeysCommand,
     },
+    /// Decrypt → $EDITOR → minimal-diff re-encrypt on save. Atomic; the
+    /// scratch plaintext is wiped on exit.
+    Edit {
+        /// Encrypted file (edited in place).
+        file: PathBuf,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+    },
     /// Decrypt into the child's environment and exec a command. No temp
     /// files. `kerf exec <file> -- <cmd> [args...]`.
     Exec {
@@ -368,6 +377,11 @@ fn main() -> ExitCode {
             file,
             format,
             reason,
+            identity,
+        }),
+        Command::Edit { file, format } => run::edit(run::EditArgs {
+            file,
+            format,
             identity,
         }),
         Command::Exec {
