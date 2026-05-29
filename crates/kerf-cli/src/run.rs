@@ -37,14 +37,15 @@ fn resolve_format(path: &Path, override_name: Option<&str>) -> Result<FileFormat
             "yaml" | "yml" => Ok(FileFormat::Yaml),
             "json" => Ok(FileFormat::Json),
             "toml" => Ok(FileFormat::Toml),
+            "env" | "dotenv" => Ok(FileFormat::Env),
             other => Err(CliError::Usage(format!(
-                "--format {other:?} not supported (yaml, json, toml)"
+                "--format {other:?} not supported (yaml, json, toml, env)"
             ))),
         };
     }
     FileFormat::detect(path).ok_or_else(|| {
         CliError::Usage(format!(
-            "could not detect format from {} (use --format yaml|json|toml)",
+            "could not detect format from {} (use --format yaml|json|toml|env)",
             path.display()
         ))
     })

@@ -16,8 +16,11 @@
 //!   required by the TOML grammar (a key/value pair cannot follow a table
 //!   header within the same table) and matches conventional TOML style.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use serde_yaml::Value;
 
 use crate::error::{Error, Result};
@@ -33,13 +36,36 @@ pub enum FileFormat {
     /// TOML via the `toml` crate. Datetimes degrade to strings; output
     /// groups scalars before tables per the TOML grammar.
     Toml,
+    /// dotenv (`KEY=value`). Flat namespace: there is no place to nest a
+    /// `kerf:` block, so the metadata is packed into a single reserved
+    /// `KERF_METADATA` key (base64 of the block as YAML). The file stays a
+    /// valid, ordinary dotenv file. Only flat string values are
+    /// representable — nested structure is rejected on serialize.
+    Env,
 }
+
+/// Reserved dotenv key that carries the packed `kerf:` block. Chosen to be
+/// extremely unlikely to collide with a real env var.
+const ENV_METADATA_KEY: &str = "KERF_METADATA";
 
 impl FileFormat {
     /// Detect from a file path. Returns `None` if the extension isn't
     /// recognized — caller decides whether to default to YAML or error.
+    ///
+    /// dotenv files always lead with `.env` (a dotfile), optionally followed
+    /// by an environment suffix:
+    /// - bare `.env`
+    /// - `.env.prod`, `.env.local`, `.env.development`, `.env.example`, …
+    ///
+    /// They are never front-named (`config.env`); pass `--format env` for any
+    /// non-standard spelling.
     #[must_use]
     pub fn detect(path: &Path) -> Option<Self> {
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if is_dotenv_filename(&name.to_ascii_lowercase()) {
+                return Some(Self::Env);
+            }
+        }
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
         match ext.as_str() {
             "yaml" | "yml" => Some(Self::Yaml),
@@ -64,6 +90,11 @@ impl FileFormat {
                 let toml_value: toml::Value = toml::from_str(text)
                     .map_err(|e| Error::Envelope(format!("toml parse: {e}")))?;
                 Ok(toml_to_yaml_value(toml_value))
+            }
+            Self::Env => {
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|e| Error::Envelope(format!("env is not valid UTF-8: {e}")))?;
+                parse_env(text)
             }
         }
     }
@@ -90,6 +121,7 @@ impl FileFormat {
                 toml::to_string(&toml_value)
                     .map_err(|e| Error::Envelope(format!("toml serialize: {e}")))
             }
+            Self::Env => serialize_env(tree),
         }
     }
 
@@ -100,6 +132,7 @@ impl FileFormat {
             Self::Yaml => "yaml",
             Self::Json => "json",
             Self::Toml => "toml",
+            Self::Env => "env",
         }
     }
 }
@@ -319,6 +352,216 @@ fn reorder_values_before_tables(v: &mut toml::Value) {
     }
 }
 
+// ──── dotenv ─────────────────────────────────────────────────────────────
+//
+// Minimal, well-defined dotenv subset (no external crate, full control over
+// round-tripping):
+//
+// - `KEY=value`, optionally `export KEY=value`.
+// - Blank lines and `#` comment lines are ignored (not preserved — consistent
+//   with the no-comment-preservation limitation across all formats).
+// - Double-quoted values support `\n`, `\t`, `\"`, `\\` escapes.
+// - Single-quoted values are literal (no escapes).
+// - Unquoted values are taken verbatim up to a trailing inline ` #` comment,
+//   then trimmed of surrounding whitespace.
+// - The reserved `KERF_METADATA` key, if present, is decoded (base64 → YAML)
+//   into the `kerf` sub-mapping the engine expects.
+
+/// True for the conventional dotenv filenames: bare `.env`, or `.env`
+/// followed by an environment suffix (`.env.prod`, `.env.local`, …).
+/// Input is expected already lowercased.
+fn is_dotenv_filename(name: &str) -> bool {
+    name == ".env" || name.starts_with(".env.")
+}
+
+/// Parse dotenv text into a flat `Mapping`, reconstructing the `kerf` block
+/// from `KERF_METADATA` if present.
+fn parse_env(text: &str) -> Result<Value> {
+    let mut map = serde_yaml::Mapping::new();
+    let mut metadata: Option<String> = None;
+
+    for (lineno, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+        let (key, raw_value) = line.split_once('=').ok_or_else(|| {
+            Error::Envelope(format!("env line {} has no '=': {raw_line:?}", lineno + 1))
+        })?;
+        let key = key.trim();
+        if !is_valid_env_key(key) {
+            return Err(Error::Envelope(format!(
+                "env line {}: invalid key {key:?}",
+                lineno + 1
+            )));
+        }
+        let value = parse_env_value(raw_value);
+        if key == ENV_METADATA_KEY {
+            metadata = Some(value);
+        } else {
+            map.insert(Value::String(key.to_string()), Value::String(value));
+        }
+    }
+
+    let mut tree = Value::Mapping(map);
+    if let Some(packed) = metadata {
+        let yaml_bytes = B64
+            .decode(packed.as_bytes())
+            .map_err(|e| Error::KerfBlock(format!("KERF_METADATA base64: {e}")))?;
+        let block: Value = serde_yaml::from_slice(&yaml_bytes)
+            .map_err(|e| Error::KerfBlock(format!("KERF_METADATA yaml: {e}")))?;
+        if let Value::Mapping(m) = &mut tree {
+            m.insert(Value::String(crate::kerf_block::RESERVED_KEY.into()), block);
+        }
+    }
+    Ok(tree)
+}
+
+/// Serialize a flat tree to dotenv, packing the `kerf` block into
+/// `KERF_METADATA`. Errors if any non-`kerf` value is nested (dotenv is flat).
+fn serialize_env(tree: &Value) -> Result<String> {
+    let Value::Mapping(map) = tree else {
+        return Err(Error::KerfBlock("env root must be a mapping".into()));
+    };
+    let mut out = String::new();
+    let mut packed_metadata: Option<String> = None;
+
+    for (k, v) in map {
+        let key = match k {
+            Value::String(s) => s.clone(),
+            _ => {
+                return Err(Error::KerfBlock(
+                    "env keys must be strings".into(),
+                ))
+            }
+        };
+        if key == crate::kerf_block::RESERVED_KEY {
+            // Pack the block as base64(YAML) under the reserved metadata key.
+            let yaml = serde_yaml::to_string(v)?;
+            packed_metadata = Some(B64.encode(yaml.as_bytes()));
+            continue;
+        }
+        let scalar = match v {
+            Value::String(s) => s.clone(),
+            Value::Bool(b) => b.to_string(),
+            Value::Number(n) => n.to_string(),
+            Value::Null => String::new(),
+            Value::Sequence(_) | Value::Mapping(_) | Value::Tagged(_) => {
+                return Err(Error::KerfBlock(format!(
+                    "env format is flat: value at {key:?} is not a scalar"
+                )))
+            }
+        };
+        writeln!(out, "{key}={}", quote_env_value(&scalar)).expect("write to String");
+    }
+
+    if let Some(meta) = packed_metadata {
+        writeln!(out, "{ENV_METADATA_KEY}={}", quote_env_value(&meta))
+            .expect("write to String");
+    }
+    Ok(out)
+}
+
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Interpret a raw dotenv value (the text right of the first `=`).
+fn parse_env_value(raw: &str) -> String {
+    let trimmed = raw.trim_start();
+    if let Some(inner) = trimmed.strip_prefix('"') {
+        // Double-quoted: read until the closing unescaped quote, applying
+        // escapes. If there's no closing quote, fall through to literal.
+        if let Some(end) = find_closing_double_quote(inner) {
+            return unescape_double(&inner[..end]);
+        }
+    } else if let Some(inner) = trimmed.strip_prefix('\'') {
+        if let Some(end) = inner.find('\'') {
+            return inner[..end].to_string();
+        }
+    }
+    // Unquoted: strip a trailing ` #...` inline comment, then trim.
+    let without_comment = match trimmed.find(" #") {
+        Some(idx) => &trimmed[..idx],
+        None => trimmed,
+    };
+    without_comment.trim_end().to_string()
+}
+
+fn find_closing_double_quote(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2, // skip escaped char
+            b'"' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn unescape_double(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('"') => out.push('"'),
+                Some(other) => {
+                    if other != '\\' {
+                        out.push('\\');
+                    }
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Quote a dotenv value if it contains characters that would otherwise be
+/// ambiguous (whitespace, `#`, quotes, `=`, or newlines). The `ENC[...]`
+/// envelope contains `=` (base64 padding), so it is always quoted — which is
+/// safe and unambiguous.
+fn quote_env_value(value: &str) -> String {
+    let needs_quoting = value.is_empty()
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '#' | '"' | '\'' | '='))
+        || value.starts_with(' ')
+        || value.ends_with(' ');
+    if !needs_quoting {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +685,114 @@ mod tests {
         let back = FileFormat::Toml.serialize(&tree).unwrap();
         let reparsed = FileFormat::Toml.parse(back.as_bytes()).unwrap();
         assert_eq!(reparsed, tree);
+    }
+
+    #[test]
+    fn detect_env_conventional_names() {
+        for name in [
+            ".env",
+            ".env.prod",
+            ".env.local",
+            ".env.development",
+            ".env.example",
+            "/path/to/.env.staging",
+        ] {
+            assert_eq!(
+                FileFormat::detect(Path::new(name)),
+                Some(FileFormat::Env),
+                "{name} should be detected as env"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_env_rejects_front_named_and_lookalikes() {
+        // Front-named files are not a real dotenv convention.
+        assert_eq!(FileFormat::detect(Path::new("config.env")), None);
+        assert_eq!(FileFormat::detect(Path::new("prod.env")), None);
+        // .environment is not a dotenv file.
+        assert_eq!(FileFormat::detect(Path::new(".environment")), None);
+    }
+
+    #[test]
+    fn env_basic_parse() {
+        let text = "DB_HOST=db.local\nDB_PASSWORD=hunter2\n# a comment\n\nexport API_TOKEN=abc\n";
+        let tree = FileFormat::Env.parse(text.as_bytes()).unwrap();
+        assert_eq!(tree["DB_HOST"].as_str().unwrap(), "db.local");
+        assert_eq!(tree["DB_PASSWORD"].as_str().unwrap(), "hunter2");
+        assert_eq!(tree["API_TOKEN"].as_str().unwrap(), "abc");
+    }
+
+    #[test]
+    fn env_quoting_roundtrip() {
+        // Values with spaces, '#', and '=' must survive a round trip.
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(
+            Value::String("MSG".into()),
+            Value::String("hello world # not a comment".into()),
+        );
+        map.insert(
+            Value::String("EQ".into()),
+            Value::String("a=b=c".into()),
+        );
+        let tree = Value::Mapping(map);
+        let out = FileFormat::Env.serialize(&tree).unwrap();
+        let reparsed = FileFormat::Env.parse(out.as_bytes()).unwrap();
+        assert_eq!(reparsed["MSG"].as_str().unwrap(), "hello world # not a comment");
+        assert_eq!(reparsed["EQ"].as_str().unwrap(), "a=b=c");
+    }
+
+    #[test]
+    fn env_double_quote_escapes() {
+        let text = "MULTILINE=\"line1\\nline2\"\n";
+        let tree = FileFormat::Env.parse(text.as_bytes()).unwrap();
+        assert_eq!(tree["MULTILINE"].as_str().unwrap(), "line1\nline2");
+    }
+
+    #[test]
+    fn env_single_quote_literal() {
+        let text = "RAW='no \\n escape here'\n";
+        let tree = FileFormat::Env.parse(text.as_bytes()).unwrap();
+        assert_eq!(tree["RAW"].as_str().unwrap(), "no \\n escape here");
+    }
+
+    #[test]
+    fn env_metadata_packing_roundtrip() {
+        // Simulate a tree with a kerf block (as the engine would produce).
+        let mut block = serde_yaml::Mapping::new();
+        block.insert(Value::String("version".into()), Value::Number(1.into()));
+        block.insert(
+            Value::String("cipher".into()),
+            Value::String("aes-256-gcm".into()),
+        );
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(
+            Value::String("DB_PASSWORD".into()),
+            Value::String("ENC[AES-GCM,n:x,c:y,t:z]".into()),
+        );
+        map.insert(Value::String("kerf".into()), Value::Mapping(block.clone()));
+        let tree = Value::Mapping(map);
+
+        let out = FileFormat::Env.serialize(&tree).unwrap();
+        // No bare `kerf` key; instead a packed KERF_METADATA line.
+        assert!(out.contains("KERF_METADATA="));
+        assert!(!out.contains("\nkerf="));
+
+        let reparsed = FileFormat::Env.parse(out.as_bytes()).unwrap();
+        assert_eq!(
+            reparsed["DB_PASSWORD"].as_str().unwrap(),
+            "ENC[AES-GCM,n:x,c:y,t:z]"
+        );
+        assert_eq!(reparsed["kerf"], Value::Mapping(block));
+    }
+
+    #[test]
+    fn env_rejects_nested_non_kerf_value() {
+        let mut nested = serde_yaml::Mapping::new();
+        nested.insert(Value::String("a".into()), Value::String("b".into()));
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(Value::String("DB".into()), Value::Mapping(nested));
+        let tree = Value::Mapping(map);
+        assert!(FileFormat::Env.serialize(&tree).is_err());
     }
 }
