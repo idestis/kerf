@@ -19,6 +19,7 @@ pub mod envelope;
 pub mod error;
 pub mod format;
 pub mod kerf_block;
+pub mod mac;
 
 pub use crypto::{Dek, Nonce, Sealed};
 pub use engine::{decrypt, default_encrypted_regex, encrypt, snapshot_previous};

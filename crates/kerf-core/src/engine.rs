@@ -9,8 +9,9 @@ use serde_yaml::Value;
 
 use crate::crypto::Dek;
 use crate::error::{Error, Result};
-use crate::format::{walk_decrypt, walk_encrypt, PreviousFile};
+use crate::format::{collect_plaintexts, walk_decrypt, walk_encrypt, PreviousFile};
 use crate::kerf_block::{KerfBlock, RecipientEntry, DEFAULT_ENCRYPTED_REGEX, RESERVED_KEY};
+use crate::mac;
 
 /// What the engine produces — a fully-encrypted YAML tree with a `kerf:` block.
 pub type EncryptedTree = Value;
@@ -88,23 +89,108 @@ pub fn encrypt(
         return Err(Error::KerfBlock("no recipients provided".into()));
     }
 
+    // Snapshot the plaintext leaves *before* encrypt so the MAC is computed
+    // over the same paths the walker will encrypt.
+    let plaintexts_for_mac = collect_leaf_plaintexts(&plain, encrypted_regex);
+
     let mut tree = plain;
     walk_encrypt(&mut tree, encrypted_regex, dek, previous)?;
+
+    let mac_envelope = mac::compute(dek, &plaintexts_for_mac)?;
 
     let block = KerfBlock {
         version: crate::kerf_block::FORMAT_VERSION,
         cipher: crate::kerf_block::CIPHER.into(),
         recipients,
         encrypted_regex: encrypted_regex.as_str().to_string(),
+        mac: Some(mac_envelope),
     };
     embed_kerf_block(&mut tree, &block)?;
     Ok(tree)
 }
 
+/// Walk plaintext tree, returning the same `path -> plaintext` map the
+/// engine will MAC. Mirrors the regex match logic in `walk_encrypt`.
+fn collect_leaf_plaintexts(
+    tree: &Value,
+    encrypted_regex: &Regex,
+) -> std::collections::HashMap<String, Vec<u8>> {
+    let mut out = std::collections::HashMap::new();
+    walk_plaintext(tree, "", encrypted_regex, &mut out);
+    out
+}
+
+fn walk_plaintext(
+    value: &Value,
+    path: &str,
+    encrypted_regex: &Regex,
+    out: &mut std::collections::HashMap<String, Vec<u8>>,
+) {
+    match value {
+        Value::Mapping(map) => {
+            for (k, v) in map {
+                let Some(key_str) = key_as_string(k) else { continue };
+                let new_path = if path.is_empty() {
+                    key_str.clone()
+                } else {
+                    format!("{path}.{key_str}")
+                };
+                match v {
+                    Value::Mapping(_) | Value::Sequence(_) => {
+                        walk_plaintext(v, &new_path, encrypted_regex, out);
+                    }
+                    Value::String(_) | Value::Number(_) | Value::Bool(_)
+                        if encrypted_regex.is_match(&key_str) =>
+                    {
+                        if let Some(bytes) = scalar_to_bytes(v) {
+                            out.insert(new_path, bytes);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Value::Sequence(seq) => {
+            for (i, item) in seq.iter().enumerate() {
+                walk_plaintext(item, &format!("{path}[{i}]"), encrypted_regex, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn key_as_string(k: &Value) -> Option<String> {
+    match k {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn scalar_to_bytes(v: &Value) -> Option<Vec<u8>> {
+    match v {
+        Value::String(s) => Some(s.as_bytes().to_vec()),
+        Value::Bool(b) => Some(b.to_string().into_bytes()),
+        Value::Number(n) => Some(n.to_string().into_bytes()),
+        Value::Null => Some(b"".to_vec()),
+        _ => None,
+    }
+}
+
 /// Decrypt a kerf-encrypted tree given the DEK. Returns a clean plaintext
-/// tree (no `kerf:` block).
+/// tree (no `kerf:` block). Verifies the file MAC before returning — a
+/// MAC failure surfaces as `Error::Decrypt`, which the CLI maps to exit 11.
+///
+/// Files written by pre-MAC versions of kerf (`kerf.mac == None`) are
+/// accepted on decrypt for now; new writes always populate the MAC. This
+/// will tighten to "MAC required" once the format reaches v2.
 pub fn decrypt(mut encrypted: EncryptedTree, dek: &Dek) -> Result<PlainTree> {
-    let _ = extract_kerf_block(&mut encrypted)?;
+    let block = extract_kerf_block(&mut encrypted)?;
+    let plaintexts = collect_plaintexts(&encrypted, dek)?;
+    if let Some(stored_mac) = &block.mac {
+        mac::verify(dek, &plaintexts, stored_mac)?;
+    }
     walk_decrypt(&mut encrypted, dek)?;
     Ok(encrypted)
 }

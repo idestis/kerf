@@ -158,28 +158,32 @@ pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
         .ok_or_else(|| CliError::NoRecipient("no age identity resolved".into()))?;
 
     let raw = read(&args.file)?;
-    let mut tree: Value = serde_yaml::from_slice(&raw)
+    let tree: Value = serde_yaml::from_slice(&raw)
         .map_err(|e| CliError::BadInput(format!("yaml parse {}: {e}", args.file.display())))?;
 
-    // Extract the kerf block, find the first age recipient, unwrap.
-    let block = kerf_core::engine::extract_kerf_block(&mut tree)?;
-    let entry = block
-        .recipients
-        .iter()
-        .find(|e| age_identity.can_unwrap(e))
-        .ok_or_else(|| {
-            CliError::NoRecipient(
-                "file has no age recipient that this identity can unwrap".into(),
-            )
-        })?;
-    let dek = age_identity.unwrap(entry)?;
+    // Probe the kerf block once to find a recipient our identity can unwrap.
+    // We then re-parse the original bytes so the engine sees the block intact.
+    let dek = {
+        let mut probe = tree.clone();
+        let block = kerf_core::engine::extract_kerf_block(&mut probe)?;
+        let entry = block
+            .recipients
+            .iter()
+            .find(|e| age_identity.can_unwrap(e))
+            .ok_or_else(|| {
+                CliError::NoRecipient(
+                    "file has no age recipient that this identity can unwrap".into(),
+                )
+            })?;
+        age_identity.unwrap(entry)?
+    };
 
-    // Re-insert the kerf block before handing to engine::decrypt? No — the
-    // engine just walks the tree and decrypts envelopes. We already popped
-    // the block, so walk_decrypt directly is the right call.
-    kerf_core::format::walk_decrypt(&mut tree, &dek)?;
+    // engine::decrypt extracts the block, verifies the MAC against the
+    // decrypted leaves, then walks-decrypt. Any tampering — value-level
+    // or whole-file MAC — surfaces here.
+    let plain_tree = kerf_core::decrypt(tree, &dek)?;
 
-    let serialized = serde_yaml::to_string(&tree)
+    let serialized = serde_yaml::to_string(&plain_tree)
         .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
     match args.output {
         Some(path) => {

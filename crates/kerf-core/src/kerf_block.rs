@@ -43,6 +43,12 @@ pub struct KerfBlock {
     /// Stored explicitly so decrypt knows what to expect — never re-derived.
     #[serde(default = "default_regex_string")]
     pub encrypted_regex: String,
+    /// Sealed `HMAC-SHA256` over the canonical walk of encrypted leaves.
+    /// Encrypted with AAD `__kerf_mac__`. See `mac.rs`. Optional on the v0.1
+    /// schema to keep round-trips of files written by pre-MAC versions
+    /// readable; new writes always populate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
 }
 
 fn default_regex_string() -> String {
@@ -96,6 +102,7 @@ impl KerfBlock {
             cipher: CIPHER.to_string(),
             recipients: Vec::new(),
             encrypted_regex,
+            mac: None,
         }
     }
 
@@ -141,6 +148,7 @@ mod tests {
                 encrypted_dek: "AAAA".into(),
             }],
             encrypted_regex: DEFAULT_ENCRYPTED_REGEX.into(),
+            mac: None,
         };
         let yaml = serde_yaml::to_string(&block).unwrap();
         let back: KerfBlock = serde_yaml::from_str(&yaml).unwrap();
