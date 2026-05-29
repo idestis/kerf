@@ -103,10 +103,11 @@ self-provisions its own KMS key (AWS via `kms:CreateKey`, GCP via
 task test:integration
 ```
 
-Emulators used: LocalStack for AWS on `:4566` (floci is a drop-in on the same
-port), and `fake-cloud-kms` for GCP on `:9010` (floci-gcp has no KMS; the image
-is amd64-only and runs under emulation on Apple Silicon). Azure is added once
-that backend lands.
+Emulators used: [floci](https://github.com/floci-io/floci) for AWS on `:4566`
+(free, MIT, no auth token — unlike recent LocalStack, which gates KMS behind a
+paid license), and `fake-cloud-kms` for GCP on `:9010` (floci-gcp has no KMS;
+the image is amd64-only and runs under emulation on Apple Silicon). Azure is
+added once that backend lands.
 
 For a persistent / already-running setup, drive the pieces yourself:
 

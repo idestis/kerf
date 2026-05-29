@@ -9,23 +9,16 @@
 
 services:
   # ─── AWS KMS ────────────────────────────────────────────────────────────
-  # LocalStack is the battle-tested default. floci is a drop-in replacement
-  # on the same port (4566) — to use it instead, swap the image for the floci
-  # image; nothing else changes. The AWS integration test self-provisions its
-  # key via kms:CreateKey, so no manual key setup is needed here.
+  # floci is a free (MIT), no-auth-token AWS emulator and a drop-in for
+  # LocalStack on port 4566. We use it rather than LocalStack because recent
+  # LocalStack releases gate KMS behind a paid license/auth token. The
+  # `-compat` image maximizes AWS-SDK wire compatibility, which is what our
+  # aws-sdk-kms client needs. The AWS integration test self-provisions its key
+  # via kms:CreateKey, so no manual key setup is needed here.
   aws-kms:
-    image: localstack/localstack:latest
+    image: floci/floci:latest-compat
     ports:
       - "4566:4566"
-    environment:
-      - SERVICES=kms
-      - EAGER_SERVICE_LOADING=1
-      - DEBUG=0
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
   # ─── GCP Cloud KMS ──────────────────────────────────────────────────────
   # floci-gcp does NOT implement Cloud KMS, so we use fake-cloud-kms. It speaks
@@ -34,7 +27,10 @@ services:
   # with `task infra:keys` after the container is up (CreateCryptoKey
   # auto-creates version 1).
   gcp-kms:
-    image: winor30/fake-cloud-kms:latest
+    # Pinned to a stable release tag rather than :latest — reproducible, and
+    # avoids the moving-tag manifest hiccups Docker Hub sometimes throws on
+    # anonymous pulls.
+    image: winor30/fake-cloud-kms:v0.0.1
     # This image is published amd64-only; on Apple Silicon / arm64 hosts Docker
     # needs to be told to pull the amd64 variant and run it under emulation
     # (Rosetta / qemu). Harmless on amd64 hosts.

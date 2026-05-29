@@ -171,13 +171,16 @@ tasks:
         set -e
         echo "Waiting for AWS KMS emulator (:4566)…"
         for i in $(seq 1 30); do
-          if curl -sf http://localhost:4566/_localstack/health >/dev/null 2>&1; then break; fi
+          # Any HTTP response (even 404) means floci is accepting connections.
+          if curl -s -o /dev/null http://localhost:4566/ 2>/dev/null; then break; fi
           [ "$i" = 30 ] && { echo "AWS emulator did not become ready"; exit 1; }
           sleep 2
         done
         echo "Waiting for GCP KMS emulator (:9010)…"
+        # fake-cloud-kms is gRPC (no HTTP), so check the TCP port with nc.
+        # (Avoid the /dev/tcp bash-ism: task's embedded shell doesn't implement it.)
         for i in $(seq 1 30); do
-          if (exec 3<>/dev/tcp/localhost/9010) 2>/dev/null; then exec 3>&- 3<&-; break; fi
+          if nc -z localhost 9010 >/dev/null 2>&1; then break; fi
           [ "$i" = 30 ] && { echo "GCP emulator did not become ready"; exit 1; }
           sleep 2
         done

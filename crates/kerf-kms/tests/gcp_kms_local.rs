@@ -14,7 +14,7 @@
 
 #![cfg(feature = "gcp-kms")]
 
-use gcloud_kms::client::{Client, ClientConfig};
+use gcloud_kms::grpc::kms::v1::key_management_service_client::KeyManagementServiceClient;
 use gcloud_kms::grpc::kms::v1::{
     crypto_key::CryptoKeyPurpose, CreateCryptoKeyRequest, CreateKeyRingRequest, CryptoKey,
 };
@@ -43,38 +43,37 @@ fn endpoint() -> Option<String> {
 /// `AlreadyExists`). `CreateCryptoKey` auto-creates version 1, so the key is
 /// immediately usable for Encrypt/Decrypt.
 fn provision(endpoint: &str) {
+    let url = if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        endpoint.to_string()
+    } else {
+        format!("http://{endpoint}")
+    };
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
-        let config = ClientConfig {
-            endpoint: endpoint.to_string(),
-            ..Default::default()
-        };
-        let client = Client::new(config).await.expect("emulator client");
+        // Raw generated client over a plaintext channel — the emulator serves
+        // gRPC without TLS and ignores credentials, so no token source needed.
+        let mut client = KeyManagementServiceClient::connect(url)
+            .await
+            .expect("emulator client");
 
         // Ignore errors: the most common is "already exists" on a re-run.
         let _ = client
-            .create_key_ring(
-                CreateKeyRingRequest {
-                    parent: "projects/test/locations/global".into(),
-                    key_ring_id: "kerf".into(),
-                    ..Default::default()
-                },
-                None,
-            )
+            .create_key_ring(CreateKeyRingRequest {
+                parent: "projects/test/locations/global".into(),
+                key_ring_id: "kerf".into(),
+                ..Default::default()
+            })
             .await;
         let _ = client
-            .create_crypto_key(
-                CreateCryptoKeyRequest {
-                    parent: KEY_RING.into(),
-                    crypto_key_id: "test".into(),
-                    crypto_key: Some(CryptoKey {
-                        purpose: CryptoKeyPurpose::EncryptDecrypt as i32,
-                        ..Default::default()
-                    }),
+            .create_crypto_key(CreateCryptoKeyRequest {
+                parent: KEY_RING.into(),
+                crypto_key_id: "test".into(),
+                crypto_key: Some(CryptoKey {
+                    purpose: CryptoKeyPurpose::EncryptDecrypt as i32,
                     ..Default::default()
-                },
-                None,
-            )
+                }),
+                ..Default::default()
+            })
             .await;
     });
 }

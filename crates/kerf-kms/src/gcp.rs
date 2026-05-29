@@ -23,7 +23,8 @@ use std::sync::OnceLock;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use gcloud_kms::client::{Client, ClientConfig};
-use gcloud_kms::grpc::kms::v1::{DecryptRequest, EncryptRequest};
+use gcloud_kms::grpc::kms::v1::key_management_service_client::KeyManagementServiceClient;
+use gcloud_kms::grpc::kms::v1::{DecryptRequest, DecryptResponse, EncryptRequest, EncryptResponse};
 use kerf_core::{Dek, RecipientEntry};
 use tokio::runtime::{Handle, Runtime};
 
@@ -68,39 +69,92 @@ fn validate_resource_id(id: &str) -> Result<()> {
     }
 }
 
-fn build_client() -> Result<Client> {
-    runtime_handle().block_on(async {
-        let config = if let Ok(endpoint) = std::env::var("KERF_KMS_ENDPOINT_GCP") {
-            if endpoint.is_empty() {
-                with_auth().await?
+/// How we reach Cloud KMS.
+///
+/// - **Prod**: gcloud-kms's high-level client over TLS, authenticated via
+///   Google's credential discovery (ADC / `GOOGLE_APPLICATION_CREDENTIALS` /
+///   metadata server).
+/// - **Emulator**: the raw generated gRPC client over a *plaintext* channel.
+///   The high-level client can't be used here — it hardcodes TLS, and
+///   `ClientTlsConfig::domain_name("localhost:9010")` is rejected. The raw
+///   client needs no token source, which is exactly right since emulators
+///   don't validate credentials.
+enum GcpConn {
+    Prod(Box<Client>),
+    Emulator(String),
+}
+
+/// Build a connection, choosing the emulator path when `KERF_KMS_ENDPOINT_GCP`
+/// is set (e.g. `localhost:9010`), otherwise the authenticated production path.
+fn build_conn() -> Result<GcpConn> {
+    if let Ok(ep) = std::env::var("KERF_KMS_ENDPOINT_GCP") {
+        if !ep.is_empty() {
+            let url = if ep.starts_with("http://") || ep.starts_with("https://") {
+                ep
             } else {
-                // Emulator path: keep the default no-op token source, just
-                // override the endpoint. No real credentials required.
-                ClientConfig {
-                    endpoint,
-                    ..Default::default()
-                }
-            }
-        } else {
-            with_auth().await?
-        };
+                format!("http://{ep}")
+            };
+            return Ok(GcpConn::Emulator(url));
+        }
+    }
+    let client = runtime_handle().block_on(async {
+        let config = ClientConfig::default()
+            .with_auth()
+            .await
+            .map_err(|e| Error::Identity(format!("gcp auth: {e}")))?;
         Client::new(config)
             .await
             .map_err(|e| Error::Wrap(format!("gcp kms client: {e}")))
+    })?;
+    Ok(GcpConn::Prod(Box::new(client)))
+}
+
+fn encrypt_via(conn: &GcpConn, req: EncryptRequest) -> Result<EncryptResponse> {
+    runtime_handle().block_on(async move {
+        match conn {
+            GcpConn::Prod(c) => c
+                .clone()
+                .encrypt(req, None)
+                .await
+                .map_err(|e| Error::Wrap(format!("gcp kms encrypt: {e}"))),
+            GcpConn::Emulator(url) => {
+                let mut c = KeyManagementServiceClient::connect(url.clone())
+                    .await
+                    .map_err(|e| Error::Wrap(format!("gcp kms emulator connect: {e}")))?;
+                Ok(c.encrypt(req)
+                    .await
+                    .map_err(|e| Error::Wrap(format!("gcp kms encrypt: {e}")))?
+                    .into_inner())
+            }
+        }
     })
 }
 
-async fn with_auth() -> Result<ClientConfig> {
-    ClientConfig::default()
-        .with_auth()
-        .await
-        .map_err(|e| Error::Identity(format!("gcp auth: {e}")))
+fn decrypt_via(conn: &GcpConn, req: DecryptRequest) -> Result<DecryptResponse> {
+    runtime_handle().block_on(async move {
+        match conn {
+            GcpConn::Prod(c) => c
+                .clone()
+                .decrypt(req, None)
+                .await
+                .map_err(|e| Error::Unwrap(format!("gcp kms decrypt: {e}"))),
+            GcpConn::Emulator(url) => {
+                let mut c = KeyManagementServiceClient::connect(url.clone())
+                    .await
+                    .map_err(|e| Error::Unwrap(format!("gcp kms emulator connect: {e}")))?;
+                Ok(c.decrypt(req)
+                    .await
+                    .map_err(|e| Error::Unwrap(format!("gcp kms decrypt: {e}")))?
+                    .into_inner())
+            }
+        }
+    })
 }
 
 /// A GCP Cloud KMS encryption recipient.
 pub struct GcpKmsRecipient {
     resource_id: String,
-    client: Client,
+    conn: GcpConn,
 }
 
 impl GcpKmsRecipient {
@@ -109,7 +163,7 @@ impl GcpKmsRecipient {
         validate_resource_id(resource_id)?;
         Ok(Self {
             resource_id: resource_id.to_string(),
-            client: build_client()?,
+            conn: build_conn()?,
         })
     }
 
@@ -131,10 +185,7 @@ impl Recipient for GcpKmsRecipient {
             plaintext: dek.for_recipient().to_vec(),
             ..Default::default()
         };
-        let client = self.client.clone();
-        let resp = runtime_handle()
-            .block_on(async move { client.encrypt(req, None).await })
-            .map_err(|e| Error::Wrap(format!("gcp kms encrypt: {e}")))?;
+        let resp = encrypt_via(&self.conn, req)?;
         if resp.ciphertext.is_empty() {
             return Err(Error::Wrap("gcp kms encrypt returned no ciphertext".into()));
         }
@@ -152,14 +203,14 @@ impl Recipient for GcpKmsRecipient {
 /// A GCP Cloud KMS identity. Credentials come from the SDK's auth flow; the
 /// `Decrypt` call routes by the `resource_id` stored in each entry.
 pub struct GcpKmsIdentity {
-    client: Client,
+    conn: GcpConn,
 }
 
 impl GcpKmsIdentity {
     /// Build an identity using the ambient GCP credentials / emulator endpoint.
     pub fn new() -> Result<Self> {
         Ok(Self {
-            client: build_client()?,
+            conn: build_conn()?,
         })
     }
 }
@@ -185,10 +236,7 @@ impl Identity for GcpKmsIdentity {
             ciphertext: B64.decode(encrypted_dek)?,
             ..Default::default()
         };
-        let client = self.client.clone();
-        let resp = runtime_handle()
-            .block_on(async move { client.decrypt(req, None).await })
-            .map_err(|e| Error::Unwrap(format!("gcp kms decrypt: {e}")))?;
+        let resp = decrypt_via(&self.conn, req)?;
         let plain = resp.plaintext;
         if plain.len() != 32 {
             return Err(Error::DekLength { got: plain.len() });
