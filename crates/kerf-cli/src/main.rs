@@ -173,6 +173,18 @@ enum Command {
         #[command(subcommand)]
         command: KeysCommand,
     },
+    /// Decrypt into the child's environment and exec a command. No temp
+    /// files. `kerf exec <file> -- <cmd> [args...]`.
+    Exec {
+        /// Encrypted file.
+        file: PathBuf,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        /// Command and arguments, after `--`.
+        #[arg(last = true, required = true, value_name = "CMD")]
+        command: Vec<String>,
+    },
     /// Decrypt two files and show their plaintext diff at the path level.
     /// Values are redacted unless --show-values.
     Diff {
@@ -358,6 +370,16 @@ fn main() -> ExitCode {
             reason,
             identity,
         }),
+        Command::Exec {
+            file,
+            format,
+            command,
+        } => run::exec(run::ExecArgs {
+            file,
+            format,
+            command,
+            identity,
+        }),
         Command::Diff {
             old,
             new,
@@ -437,6 +459,8 @@ fn main() -> ExitCode {
         // Predicate commands (e.g. path-encrypted) signal a clean "false" via
         // exit 1 with no diagnostic — the exit code is the contract.
         Err(CliError::Predicate) => ExitCode::from(1),
+        // `exec` propagates its child's exact exit code, silently.
+        Err(CliError::ChildExit(code)) => ExitCode::from(code),
         Err(err) => {
             eprintln!("kerf: {err}");
             ExitCode::from(err.exit_code())
@@ -471,6 +495,11 @@ pub enum CliError {
     #[error("")]
     Predicate,
 
+    /// `kerf exec`'s child process exited non-zero. We propagate its exact
+    /// code and print nothing — the child already spoke for itself.
+    #[error("")]
+    ChildExit(u8),
+
     #[error("{0}")]
     Usage(String),
 
@@ -497,6 +526,9 @@ impl CliError {
     fn exit_code(&self) -> u8 {
         match self {
             Self::Unimplemented | Self::Other(_) | Self::Predicate => exit::GENERIC,
+            // ChildExit carries its own code; this is only consulted as a
+            // fallback (main intercepts it before calling exit_code).
+            Self::ChildExit(code) => *code,
             Self::Usage(_) => exit::USAGE,
             Self::BadInput(_) => exit::BAD_INPUT,
             Self::NoRecipient(_) => exit::NO_RECIPIENT,

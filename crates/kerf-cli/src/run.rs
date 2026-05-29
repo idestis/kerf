@@ -355,6 +355,154 @@ pub fn mac_verify(args: VerifyArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+pub struct ExecArgs {
+    pub file: PathBuf,
+    pub format: Option<String>,
+    pub command: Vec<String>,
+    pub identity: IdentityFlags,
+}
+
+/// `kerf exec <file> -- <cmd> [args...]` (SPEC § 7.1) — decrypt the file into
+/// environment variables and run `cmd` with them overlaid on the current env.
+///
+/// Dotted paths become `UPPER_SNAKE_CASE` (`db.password` → `DB_PASSWORD`);
+/// array indices are concatenated (`users[0].api_key` → `USERS_0_API_KEY`).
+/// Every scalar leaf is exported, secret or not. No temp files: plaintext
+/// lives only in this process's memory and the child's environment, and the
+/// child's exit code is propagated verbatim.
+pub fn exec(args: ExecArgs) -> Result<(), CliError> {
+    let Some((program, child_args)) = args.command.split_first() else {
+        return Err(CliError::Usage(
+            "exec needs a command after `--`, e.g. `kerf exec f.kerf.yaml -- env`".into(),
+        ));
+    };
+
+    let identity = ResolvedIdentity::resolve(&args.identity)?;
+    let format = resolve_format(&args.file, args.format.as_deref())?;
+    let raw = read(&args.file)?;
+    let tree: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!(
+            "{} parse {}: {e}",
+            format.name(),
+            args.file.display()
+        ))
+    })?;
+    let dek = {
+        let mut probe = tree.clone();
+        let block = kerf_core::engine::extract_kerf_block(&mut probe)?;
+        unwrap_any(&block.recipients, &identity)?
+    };
+    let plain = kerf_core::decrypt(tree, &dek)?;
+
+    let env = build_env(&plain)?;
+
+    let status = std::process::Command::new(program)
+        .args(child_args)
+        .envs(&env)
+        .status()
+        .map_err(|e| CliError::Other(format!("exec {program:?}: {e}")))?;
+
+    // Propagate the child's exact exit code. A signal-terminated child has no
+    // code; map that to 1.
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(code) => Err(CliError::ChildExit(u8::try_from(code & 0xff).unwrap_or(1))),
+        None => Err(CliError::ChildExit(1)),
+    }
+}
+
+/// Flatten the plaintext tree into `ENV_NAME -> value`, erroring on a name
+/// collision (two distinct paths mapping to the same env var) so a silent
+/// overwrite can't hide a secret.
+fn build_env(tree: &Value) -> Result<std::collections::BTreeMap<String, String>, CliError> {
+    // Track the source path per name so a collision message can name both.
+    let mut by_name: std::collections::BTreeMap<String, (String, String)> =
+        std::collections::BTreeMap::new();
+    walk_env(tree, "", &mut by_name)?;
+    Ok(by_name.into_iter().map(|(k, (_, v))| (k, v)).collect())
+}
+
+fn walk_env(
+    value: &Value,
+    prefix: &str,
+    out: &mut std::collections::BTreeMap<String, (String, String)>,
+) -> Result<(), CliError> {
+    match value {
+        Value::Mapping(map) => {
+            for (k, v) in map {
+                let Some(key) = scalar_key(k) else { continue };
+                let path = if prefix.is_empty() {
+                    key
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                walk_env(v, &path, out)?;
+            }
+        }
+        Value::Sequence(seq) => {
+            for (i, v) in seq.iter().enumerate() {
+                walk_env(v, &format!("{prefix}[{i}]"), out)?;
+            }
+        }
+        scalar => {
+            let name = env_name(prefix);
+            if name.is_empty() {
+                return Ok(());
+            }
+            let val = scalar_to_string(scalar);
+            if let Some((existing_path, _)) = out.get(&name) {
+                if existing_path != prefix {
+                    return Err(CliError::Usage(format!(
+                        "env var {name} maps from two paths ({existing_path} and {prefix}) \
+                         — rename a key to disambiguate"
+                    )));
+                }
+            }
+            out.insert(name, (prefix.to_string(), val));
+        }
+    }
+    Ok(())
+}
+
+/// Convert a dotted path to an `UPPER_SNAKE_CASE` env var name: runs of
+/// non-alphanumeric characters (`.`, `[`, `]`, `_`) collapse to one `_`.
+fn env_name(path: &str) -> String {
+    let mut name = String::new();
+    let mut at_sep = true; // suppress a leading underscore
+    for ch in path.chars() {
+        if ch.is_ascii_alphanumeric() {
+            name.push(ch.to_ascii_uppercase());
+            at_sep = false;
+        } else if !at_sep {
+            name.push('_');
+            at_sep = true;
+        }
+    }
+    while name.ends_with('_') {
+        name.pop();
+    }
+    name
+}
+
+fn scalar_key(k: &Value) -> Option<String> {
+    match k {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn scalar_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
+        _ => String::new(),
+    }
+}
+
 pub struct RotateArgs {
     pub file: PathBuf,
     pub format: Option<String>,
