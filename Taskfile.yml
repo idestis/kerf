@@ -110,31 +110,108 @@ tasks:
       - cargo test -p kerf-core --release
 
   test:integration:
-    desc: 'KMS end-to-end tests against local emulators. Requires running emulators + env vars.'
+    desc: 'Batteries-included: spin up KMS emulators, run end-to-end tests, tear down.'
+    # Endpoint + credential env vars are set for the whole task, so the
+    # cargo test subprocess sees them and the #[ignore]d tests actually run.
+    env:
+      KERF_KMS_ENDPOINT_AWS: http://localhost:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      KERF_KMS_ENDPOINT_GCP: localhost:8085
+      KERF_GCP_TEST_KEY: projects/test/locations/global/keyRings/kerf/cryptoKeys/test
     cmds:
-      # These talk to real emulators over the wire (no mocks, per CLAUDE.md).
-      # Each provider's tests skip unless its endpoint env var is set:
-      #
-      #   AWS   — floci or LocalStack on :4566
-      #     export KERF_KMS_ENDPOINT_AWS=http://localhost:4566
-      #     export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1
-      #
-      #   GCP   — fake-cloud-kms (floci-gcp has no KMS) on :8085
-      #     export KERF_KMS_ENDPOINT_GCP=localhost:8085
-      #     export KERF_GCP_TEST_KEY=projects/test/locations/global/keyRings/r/cryptoKeys/k
-      #
-      #   Azure — floci-az or lowkey-vault on :4577
-      #     export KERF_KMS_ENDPOINT_AZURE=http://localhost:4577
-      #     export KERF_AZURE_TEST_KEY=https://<vault>/keys/<name>/<version>
-      #
-      # Run only the ones whose emulator you have up; the rest skip cleanly.
+      - task: infra:up
+      # `defer` runs at task end in LIFO order — registered right after up so
+      # the emulators are torn down even if wait / keys / the tests fail.
+      - defer: { task: infra:down }
+      - task: infra:wait
+      - task: infra:keys
+      # Real wire format, no mocks (per CLAUDE.md). --ignored runs ONLY the
+      # emulator-gated tests.
+      - cargo test --workspace --all-features -- --ignored
+
+  test:integration:manual:
+    desc: 'Run integration tests against already-running infra (no up/down). Set env yourself.'
+    cmds:
       - cargo test --workspace --all-features -- --ignored
     preconditions:
       - sh: 'test -n "$KERF_KMS_ENDPOINT_AWS$KERF_KMS_ENDPOINT_GCP$KERF_KMS_ENDPOINT_AZURE"'
         msg: |
-          No KMS emulator endpoint configured. Set at least one of
-          KERF_KMS_ENDPOINT_AWS / KERF_KMS_ENDPOINT_GCP / KERF_KMS_ENDPOINT_AZURE
-          and start the matching emulator. See the task definition for setup.
+          No KMS emulator endpoint configured. Either run `task test:integration`
+          (which manages the emulators for you), or start them yourself and
+          `eval "$(task infra:env)"` before re-running this.
+
+  # ───── test infra (local KMS emulators) ─────────────────────────────────
+  #
+  # `task test:integration` drives these automatically. They're also exposed
+  # individually for manual / persistent-infra workflows.
+
+  infra:up:
+    desc: 'Start local KMS emulators (AWS, GCP) in docker.'
+    preconditions:
+      - sh: command -v docker >/dev/null
+        msg: 'docker not found. Install Docker to run the KMS emulators.'
+    cmds:
+      - docker compose -f docker-compose.test.yml up -d
+
+  infra:down:
+    desc: 'Stop and remove the local KMS emulators (and their volumes).'
+    cmds:
+      - docker compose -f docker-compose.test.yml down -v
+
+  infra:status:
+    desc: 'Show the running emulator containers.'
+    cmds:
+      - docker compose -f docker-compose.test.yml ps
+
+  infra:wait:
+    desc: 'Block until the emulators are accepting connections (≤60s).'
+    cmds:
+      - |
+        set -e
+        echo "Waiting for AWS KMS emulator (:4566)…"
+        for i in $(seq 1 30); do
+          if curl -sf http://localhost:4566/_localstack/health >/dev/null 2>&1; then break; fi
+          [ "$i" = 30 ] && { echo "AWS emulator did not become ready"; exit 1; }
+          sleep 2
+        done
+        echo "Waiting for GCP KMS emulator (:8085)…"
+        for i in $(seq 1 30); do
+          if (exec 3<>/dev/tcp/localhost/8085) 2>/dev/null; then exec 3>&- 3<&-; break; fi
+          [ "$i" = 30 ] && { echo "GCP emulator did not become ready"; exit 1; }
+          sleep 2
+        done
+        echo "Emulators ready."
+
+  infra:env:
+    desc: 'Print integration-test env vars. Use: eval "$(task infra:env)"'
+    silent: true
+    cmds:
+      - |
+        echo 'export KERF_KMS_ENDPOINT_AWS=http://localhost:4566'
+        echo 'export AWS_ACCESS_KEY_ID=test'
+        echo 'export AWS_SECRET_ACCESS_KEY=test'
+        echo 'export AWS_REGION=us-east-1'
+        echo 'export KERF_KMS_ENDPOINT_GCP=localhost:8085'
+        echo 'export KERF_GCP_TEST_KEY=projects/test/locations/global/keyRings/kerf/cryptoKeys/test'
+
+  infra:keys:
+    desc: 'Provision the GCP test key in the running emulator (AWS self-provisions).'
+    preconditions:
+      - sh: command -v grpcurl >/dev/null
+        msg: 'grpcurl not found (brew install grpcurl). Needed to create the GCP test key.'
+    cmds:
+      # fake-cloud-kms speaks the Cloud KMS gRPC API. Create the key ring and
+      # crypto key the GCP integration test expects. Ignore "already exists".
+      - |
+        set -e
+        EP=localhost:8085
+        grpcurl -plaintext -d '{"parent":"projects/test/locations/global","key_ring_id":"kerf"}' \
+          "$EP" google.cloud.kms.v1.KeyManagementService/CreateKeyRing 2>/dev/null || true
+        grpcurl -plaintext -d '{"parent":"projects/test/locations/global/keyRings/kerf","crypto_key_id":"test","crypto_key":{"purpose":"ENCRYPT_DECRYPT"}}' \
+          "$EP" google.cloud.kms.v1.KeyManagementService/CreateCryptoKey 2>/dev/null || true
+        echo "GCP test key ready: projects/test/locations/global/keyRings/kerf/cryptoKeys/test"
 
   deny:
     desc: 'Supply-chain audit (cargo-deny: advisories, licenses, bans, sources).'

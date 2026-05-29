@@ -89,27 +89,31 @@ There are two tiers, split so the default suite never needs the network:
 | Command | What it runs | Needs |
 |---|---|---|
 | `task test` | All crypto, format, envelope, MAC, and KMS request-shape tests. KMS end-to-end tests are `#[ignore]`d and skipped here. | nothing |
-| `task test:integration` | The `#[ignore]`d KMS end-to-end tests, against **local emulators** over the real wire (no mocks — per [`CLAUDE.md`](CLAUDE.md)). | running emulator(s) + env vars |
+| `task test:integration` | Spins up local KMS emulators in Docker, runs the `#[ignore]`d KMS end-to-end tests against the real wire (no mocks — per [`CLAUDE.md`](CLAUDE.md)), then tears the emulators back down. | Docker, `grpcurl` |
 
-`task test` is what CI runs on every PR. Integration tests are for maintainers
-with emulators up locally; each provider's tests skip cleanly unless its
-endpoint env var is set, so you only need the emulators you actually want to
-exercise:
+`task test` is what CI runs on every PR — fully offline, runs anywhere.
+
+`task test:integration` is **batteries-included**: it brings the emulators up
+(`docker compose -f docker-compose.test.yml`), waits for them, provisions the
+GCP test key, runs the tests, and tears everything down afterwards — even if
+the tests fail. One command:
 
 ```bash
-# AWS — floci or LocalStack on :4566
-export KERF_KMS_ENDPOINT_AWS=http://localhost:4566
-export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1
-
-# GCP — fake-cloud-kms (floci-gcp has no KMS) on :8085
-export KERF_KMS_ENDPOINT_GCP=localhost:8085
-export KERF_GCP_TEST_KEY=projects/test/locations/global/keyRings/r/cryptoKeys/k
-
-# Azure — floci-az or lowkey-vault on :4577
-export KERF_KMS_ENDPOINT_AZURE=http://localhost:4577
-export KERF_AZURE_TEST_KEY=https://<vault>/keys/<name>/<version>
-
 task test:integration
+```
+
+Emulators used: LocalStack for AWS on `:4566` (floci is a drop-in on the same
+port), and `fake-cloud-kms` for GCP on `:8085` (floci-gcp has no KMS). Azure is
+added once that backend lands.
+
+For a persistent / already-running setup, drive the pieces yourself:
+
+```bash
+task infra:up                 # start emulators
+eval "$(task infra:env)"      # export endpoint + credential env vars
+task infra:keys               # provision the GCP test key
+task test:integration:manual  # run against the running infra (no up/down)
+task infra:down               # stop + remove
 ```
 
 Conventional Commits drive both the changelog and the version bump:

@@ -1,0 +1,48 @@
+# Local KMS emulators for `task test:integration`.
+#
+# Brought up/down via `task infra:up` / `task infra:down`. None of these are
+# needed for `task test` (the default suite is fully offline) — they exist
+# only so maintainers can exercise the real KMS wire format locally without
+# touching a cloud account.
+#
+# Ports match the KERF_KMS_ENDPOINT_* values printed by `task infra:env`.
+
+services:
+  # ─── AWS KMS ────────────────────────────────────────────────────────────
+  # LocalStack is the battle-tested default. floci is a drop-in replacement
+  # on the same port (4566) — to use it instead, swap the image for the floci
+  # image; nothing else changes. The AWS integration test self-provisions its
+  # key via kms:CreateKey, so no manual key setup is needed here.
+  aws-kms:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=kms
+      - EAGER_SERVICE_LOADING=1
+      - DEBUG=0
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── GCP Cloud KMS ──────────────────────────────────────────────────────
+  # floci-gcp does NOT implement Cloud KMS, so we use fake-cloud-kms. The GCP
+  # integration test expects KERF_GCP_TEST_KEY to already exist; provision it
+  # with `task infra:keys` after the container is healthy.
+  gcp-kms:
+    image: winor30/fake-cloud-kms:latest
+    ports:
+      - "8085:8085"
+    command: ["-host", "0.0.0.0", "-port", "8085"]
+
+  # ─── Azure Key Vault ────────────────────────────────────────────────────
+  # Enabled once the Azure backend lands. lowkey-vault is the emulator; floci-az
+  # is the alternative on :4577. Left commented so `infra:up` doesn't pull an
+  # image the test suite can't use yet.
+  #
+  # azure-kv:
+  #   image: nagyesta/lowkey-vault:latest
+  #   ports:
+  #     - "4577:8443"
