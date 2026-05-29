@@ -355,6 +355,94 @@ pub fn mac_verify(args: VerifyArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+pub struct RotateArgs {
+    pub file: PathBuf,
+    pub format: Option<String>,
+    pub reason: Option<String>,
+    pub identity: IdentityFlags,
+}
+
+/// `kerf rotate <file> [--reason]` (SPEC § 7.3) — generate a fresh DEK,
+/// re-encrypt every value with fresh nonces, and re-wrap for the *same*
+/// recipients. This is the one operation that legitimately rewrites the whole
+/// file: it deliberately runs encrypt with `previous = None`, so the kerf
+/// byte-identity rule does not apply and every envelope changes.
+///
+/// Use it to limit forward exposure after a suspected DEK compromise — the old
+/// DEK can no longer decrypt the new file.
+pub fn rotate(args: RotateArgs) -> Result<(), CliError> {
+    let identity = ResolvedIdentity::resolve(&args.identity)?;
+    let format = resolve_format(&args.file, args.format.as_deref())?;
+
+    let raw = read(&args.file)?;
+    let tree: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!(
+            "{} parse {}: {e}",
+            format.name(),
+            args.file.display()
+        ))
+    })?;
+
+    // Old block → old recipients + regex; unwrap the old DEK to read values.
+    let block = {
+        let mut probe = tree.clone();
+        kerf_core::engine::extract_kerf_block(&mut probe)?
+    };
+    let old_dek = unwrap_any(&block.recipients, &identity)?;
+    let plain = kerf_core::decrypt(tree, &old_dek)?;
+
+    // Reconstruct the recipient set from the stored addressing so we re-wrap
+    // for exactly the same keys. A file whose backend isn't compiled in can't
+    // be rotated by this binary — surface that rather than silently dropping.
+    let flags = flags_from_entries(&block.recipients);
+    let resolved = ResolvedRecipients::resolve(&flags)?;
+    if !resolved.unsupported.is_empty() {
+        let kinds: Vec<&str> = resolved.unsupported.iter().map(|u| u.kind).collect();
+        return Err(CliError::Other(format!(
+            "file has recipients {kinds:?} whose backend isn't built into this binary \
+             — rebuild with the matching feature to rotate"
+        )));
+    }
+
+    let new_dek = Dek::generate();
+    let entries = resolved.wrap_all(&new_dek)?;
+    let regex = Regex::new(&block.encrypted_regex)
+        .map_err(|e| CliError::Other(format!("stored encrypted_regex is invalid: {e}")))?;
+
+    // previous = None → full re-encrypt with fresh nonces under the new DEK.
+    let encrypted = kerf_core::encrypt(plain, &new_dek, &regex, entries, None)?;
+
+    let serialized = format
+        .serialize(&encrypted)
+        .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
+    atomic_write(&args.file, serialized.as_bytes())?;
+
+    // --reason is audit output. The v1 on-disk block has no field for it
+    // (adding one is a format-version change, SPEC § 7.3 vs § 4.2), so we log
+    // it rather than silently dropping it or mutating the format.
+    if let Some(reason) = &args.reason {
+        eprintln!("kerf: rotated {} — reason: {reason}", args.file.display());
+    } else {
+        eprintln!("kerf: rotated {} (fresh DEK)", args.file.display());
+    }
+    Ok(())
+}
+
+/// Reconstruct `RecipientFlags` from on-disk entries so `ResolvedRecipients`
+/// can re-parse them into wrap-capable recipients (used by `rotate`).
+fn flags_from_entries(entries: &[RecipientEntry]) -> RecipientFlags {
+    let mut flags = RecipientFlags::default();
+    for entry in entries {
+        match entry {
+            RecipientEntry::Age { recipient, .. } => flags.age.push(recipient.clone()),
+            RecipientEntry::AwsKms { arn, .. } => flags.kms.push(arn.clone()),
+            RecipientEntry::GcpKms { resource_id, .. } => flags.gcp_kms.push(resource_id.clone()),
+            RecipientEntry::AzureKv { key_id, .. } => flags.azure_kv.push(key_id.clone()),
+        }
+    }
+    flags
+}
+
 pub struct SetArgs {
     pub file: PathBuf,
     pub path: String,

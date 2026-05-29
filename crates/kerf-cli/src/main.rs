@@ -151,6 +151,20 @@ enum Command {
         #[arg(short, long, value_name = "PATH")]
         output: PathBuf,
     },
+    /// Rotate the DEK: fresh key, re-encrypt every value, re-wrap for the
+    /// same recipients. The one command that rewrites the whole file.
+    Rotate {
+        /// Encrypted file (mutated in place).
+        file: PathBuf,
+        /// Audit note for why the rotation happened (logged, not yet stored).
+        #[arg(long, value_name = "MSG")]
+        reason: Option<String>,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        #[command(flatten)]
+        identity: IdentityFlags,
+    },
     /// Manage recipients without rotating the DEK (add / remove / list).
     /// Body ciphertexts and the MAC stay byte-identical.
     Keys {
@@ -325,6 +339,17 @@ fn main() -> ExitCode {
             path_regex,
             encrypted_regex,
             mac_all,
+        }),
+        Command::Rotate {
+            file,
+            reason,
+            format,
+            identity,
+        } => run::rotate(run::RotateArgs {
+            file,
+            format,
+            reason,
+            identity,
         }),
         Command::Keys { command } => match command {
             KeysCommand::Add {
