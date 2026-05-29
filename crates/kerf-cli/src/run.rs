@@ -1,9 +1,9 @@
 //! Command implementations — `encrypt` and `decrypt` are real in v0.1.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use kerf_core::engine::{snapshot_previous, default_encrypted_regex};
-use kerf_core::{Dek, RecipientEntry};
+use kerf_core::engine::{default_encrypted_regex, snapshot_previous};
+use kerf_core::{Dek, FileFormat, RecipientEntry};
 use kerf_kms::recipient::{Identity, Recipient};
 use regex::Regex;
 use serde_yaml::Value;
@@ -17,13 +17,36 @@ pub struct EncryptArgs {
     pub output: Option<PathBuf>,
     pub in_place: bool,
     pub encrypted_regex: Option<String>,
+    pub format: Option<String>,
     pub recipients: RecipientFlags,
 }
 
 pub struct DecryptArgs {
     pub file: PathBuf,
     pub output: Option<PathBuf>,
+    pub format: Option<String>,
     pub identity: IdentityFlags,
+}
+
+/// Pick the on-disk format for a path: explicit --format override > extension
+/// detection > error. We don't default to YAML silently because doing so on
+/// an unrecognized extension would silently mis-parse the file.
+fn resolve_format(path: &Path, override_name: Option<&str>) -> Result<FileFormat, CliError> {
+    if let Some(name) = override_name {
+        return match name.to_ascii_lowercase().as_str() {
+            "yaml" | "yml" => Ok(FileFormat::Yaml),
+            "json" => Ok(FileFormat::Json),
+            other => Err(CliError::Usage(format!(
+                "--format {other:?} not supported (yaml, json)"
+            ))),
+        };
+    }
+    FileFormat::detect(path).ok_or_else(|| {
+        CliError::Usage(format!(
+            "could not detect format from {} (use --format yaml|json)",
+            path.display()
+        ))
+    })
 }
 
 /// Generate a fresh age keypair and write the secret to `output`.
@@ -88,18 +111,27 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
     let dest = resolve_dest(&args.file, args.output.as_deref(), args.in_place)?;
     let resolved = ResolvedRecipients::resolve(&args.recipients)?;
     let regex = compile_regex(args.encrypted_regex.as_deref())?;
+    // Format is decided once per command — input and output use the same.
+    // If the user wants to convert YAML→JSON they go through decrypt + re-encrypt.
+    let format = resolve_format(&args.file, args.format.as_deref())?;
 
     // Parse plaintext input.
     let raw = read(&args.file)?;
-    let plain: Value = serde_yaml::from_slice(&raw)
-        .map_err(|e| CliError::BadInput(format!("yaml parse {}: {e}", args.file.display())))?;
+    let plain: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!("{} parse {}: {e}", format.name(), args.file.display()))
+    })?;
 
     // If destination exists, build a previous-file snapshot for the kerf rule.
     // We need to unwrap the DEK from the existing file's recipient block first.
     let (dek, previous, existing_entries) = if dest.exists() {
         let existing_raw = read(&dest)?;
-        let existing: Value = serde_yaml::from_slice(&existing_raw)
-            .map_err(|e| CliError::BadInput(format!("yaml parse {}: {e}", dest.display())))?;
+        let existing: Value = format.parse(&existing_raw).map_err(|e| {
+            CliError::BadInput(format!(
+                "{} parse {}: {e}",
+                format.name(),
+                dest.display()
+            ))
+        })?;
 
         match try_unwrap_for_diff(&existing) {
             Ok((existing_dek, prev, entries)) => (existing_dek, Some(prev), Some(entries)),
@@ -144,7 +176,8 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
 
     let encrypted = kerf_core::encrypt(plain, &dek, &regex, entries, previous.as_ref())?;
 
-    let serialized = serde_yaml::to_string(&encrypted)
+    let serialized = format
+        .serialize(&encrypted)
         .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
     atomic_write(&dest, serialized.as_bytes())?;
     eprintln!("kerf: wrote {}", dest.display());
@@ -156,10 +189,12 @@ pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
     let age_identity = identity
         .age
         .ok_or_else(|| CliError::NoRecipient("no age identity resolved".into()))?;
+    let format = resolve_format(&args.file, args.format.as_deref())?;
 
     let raw = read(&args.file)?;
-    let tree: Value = serde_yaml::from_slice(&raw)
-        .map_err(|e| CliError::BadInput(format!("yaml parse {}: {e}", args.file.display())))?;
+    let tree: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!("{} parse {}: {e}", format.name(), args.file.display()))
+    })?;
 
     // Probe the kerf block once to find a recipient our identity can unwrap.
     // We then re-parse the original bytes so the engine sees the block intact.
@@ -183,7 +218,8 @@ pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
     // or whole-file MAC — surfaces here.
     let plain_tree = kerf_core::decrypt(tree, &dek)?;
 
-    let serialized = serde_yaml::to_string(&plain_tree)
+    let serialized = format
+        .serialize(&plain_tree)
         .map_err(|e| CliError::Other(format!("serialize: {e}")))?;
     match args.output {
         Some(path) => {

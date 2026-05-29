@@ -73,7 +73,7 @@ pub struct IdentityFlags {
 enum Command {
     /// Encrypt a plaintext file. Minimal-diff re-encryption if output exists.
     Encrypt {
-        /// Plaintext input file (YAML).
+        /// Plaintext input file (YAML or JSON).
         file: PathBuf,
         /// Destination. If omitted, requires --in-place.
         #[arg(long, value_name = "PATH")]
@@ -84,6 +84,9 @@ enum Command {
         /// Override the default encrypted-key regex.
         #[arg(long, value_name = "REGEX")]
         encrypted_regex: Option<String>,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
         #[command(flatten)]
         recipients: RecipientFlags,
     },
@@ -94,6 +97,9 @@ enum Command {
         /// Destination. Stdout if omitted.
         #[arg(long, value_name = "PATH")]
         output: Option<PathBuf>,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
         #[command(flatten)]
         identity: IdentityFlags,
     },
@@ -128,21 +134,25 @@ fn main() -> ExitCode {
             output,
             in_place,
             encrypted_regex,
+            format,
             recipients,
         } => run::encrypt(run::EncryptArgs {
             file,
             output,
             in_place,
             encrypted_regex,
+            format,
             recipients,
         }),
         Command::Decrypt {
             file,
             output,
+            format,
             identity,
         } => run::decrypt(run::DecryptArgs {
             file,
             output,
+            format,
             identity,
         }),
         Command::Keygen { output } => run::keygen(output),
