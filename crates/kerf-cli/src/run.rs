@@ -36,14 +36,15 @@ fn resolve_format(path: &Path, override_name: Option<&str>) -> Result<FileFormat
         return match name.to_ascii_lowercase().as_str() {
             "yaml" | "yml" => Ok(FileFormat::Yaml),
             "json" => Ok(FileFormat::Json),
+            "toml" => Ok(FileFormat::Toml),
             other => Err(CliError::Usage(format!(
-                "--format {other:?} not supported (yaml, json)"
+                "--format {other:?} not supported (yaml, json, toml)"
             ))),
         };
     }
     FileFormat::detect(path).ok_or_else(|| {
         CliError::Usage(format!(
-            "could not detect format from {} (use --format yaml|json)",
+            "could not detect format from {} (use --format yaml|json|toml)",
             path.display()
         ))
     })
