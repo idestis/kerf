@@ -20,7 +20,7 @@ The corollary is just as important: if a value's plaintext **has** changed, the 
 
 ## Stack
 
-- Rust 2021, MSRV 1.75
+- Rust 2021, MSRV 1.96
 - `aws-lc-rs` for AEAD, HMAC, RNG. Never `ring` directly, never `openssl`.
 - `age` crate for age recipients
 - `aws-sdk-kms`, `google-cloud-kms`, `azure_security_keyvault_keys` for KMS

@@ -77,7 +77,7 @@ Supported platforms:
 cargo install --git https://github.com/idestis/kerf kerf-cli
 ```
 
-Requires Rust 1.75 or newer.
+Requires Rust 1.96 or newer.
 
 ## Quick example
 

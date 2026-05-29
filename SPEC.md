@@ -343,7 +343,7 @@ Rules are evaluated top-to-bottom; first match wins. `init` writes a sensible de
 
 ## 9. Language and dependencies
 
-**Language:** Rust 2021, MSRV `1.75`.
+**Language:** Rust 2021, MSRV `1.96`. (Driven by the cloud KMS SDKs — `aws-config`/`aws-sdk-kms` require 1.91+; the MSRV tracks current stable.)
 
 **Why Rust:**
 - Single statically-linked binary across all targets.
