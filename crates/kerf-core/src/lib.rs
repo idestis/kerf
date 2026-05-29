@@ -13,13 +13,15 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-/// Errors produced by `kerf-core`.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Placeholder until real variants land.
-    #[error("not yet implemented")]
-    Unimplemented,
-}
+pub mod crypto;
+pub mod engine;
+pub mod envelope;
+pub mod error;
+pub mod format;
+pub mod kerf_block;
 
-/// Convenience alias used throughout the crate.
-pub type Result<T> = core::result::Result<T, Error>;
+pub use crypto::{Dek, Nonce, Sealed};
+pub use engine::{decrypt, default_encrypted_regex, encrypt, snapshot_previous};
+pub use envelope::Envelope;
+pub use error::{Error, Result};
+pub use kerf_block::{KerfBlock, RecipientEntry, DEFAULT_ENCRYPTED_REGEX, RESERVED_KEY};

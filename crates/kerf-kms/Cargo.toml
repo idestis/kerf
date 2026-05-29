@@ -15,9 +15,9 @@ categories.workspace = true
 [dependencies]
 kerf-core = { workspace = true }
 thiserror = { workspace = true }
-# Real deps land when individual recipients are implemented; declared in
-# workspace.dependencies so they can be enabled here behind feature flags
-# without touching every Cargo.toml.
+base64    = { workspace = true }
+age       = { workspace = true }
+secrecy   = { workspace = true }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

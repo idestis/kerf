@@ -17,10 +17,12 @@ name = "kerf"
 path = "src/main.rs"
 
 [dependencies]
-kerf-core = { workspace = true }
-kerf-kms  = { workspace = true }
-clap      = { workspace = true }
-anyhow    = { workspace = true }
-thiserror = { workspace = true }
-tracing   = { workspace = true }
+kerf-core  = { workspace = true }
+kerf-kms   = { workspace = true }
+clap       = { workspace = true }
+anyhow     = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
 tracing-subscriber = { workspace = true }
+serde_yaml = { workspace = true }
+regex      = { workspace = true }

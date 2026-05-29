@@ -1,20 +1,27 @@
 //! `kerf` — diff-aware, KMS-first encryption for structured secret files.
 //!
-//! This binary is the user-facing surface. The command tree mirrors SPEC § 7;
-//! subcommands are stubbed until the corresponding `kerf-core` / `kerf-kms`
-//! pieces land. Real implementations must preserve the on-disk byte-identity
-//! invariant described in CLAUDE.md and SPEC § 6.
+//! v0.1 ships age recipients only; KMS provider flags are accepted at the
+//! CLI level but error with "not yet implemented" until the corresponding
+//! `kerf-kms` backend lands.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
-/// Exit codes — stable contract, see SPEC § 7.6.
 mod exit {
     pub const GENERIC: u8 = 1;
     pub const USAGE: u8 = 2;
+    pub const NO_RECIPIENT: u8 = 10;
+    pub const MAC_FAIL: u8 = 11;
+    pub const AAD_FAIL: u8 = 12;
+    pub const UNWRAP_FAIL: u8 = 13;
+    pub const BAD_INPUT: u8 = 20;
 }
+
+mod io;
+mod recipients;
+mod run;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,24 +39,53 @@ struct Cli {
     command: Command,
 }
 
+/// Recipient flags — accepted on both `encrypt` and (where relevant) other
+/// commands that take a recipient set. Mirrors SOPS's flag names so muscle
+/// memory carries over.
+#[derive(Args, Debug, Clone, Default)]
+pub struct RecipientFlags {
+    /// age recipient (`age1…`). May be repeated.
+    #[arg(long = "age", value_name = "RECIPIENT")]
+    pub age: Vec<String>,
+
+    /// AWS KMS key ARN. May be repeated. Not yet implemented in v0.1.
+    #[arg(long = "kms", value_name = "ARN")]
+    pub kms: Vec<String>,
+
+    /// GCP KMS resource ID. May be repeated. Not yet implemented in v0.1.
+    #[arg(long = "gcp-kms", value_name = "ID")]
+    pub gcp_kms: Vec<String>,
+
+    /// Azure Key Vault key URL. May be repeated. Not yet implemented in v0.1.
+    #[arg(long = "azure-kv", value_name = "URL")]
+    pub azure_kv: Vec<String>,
+}
+
+/// Identity flags — required only on `decrypt`.
+#[derive(Args, Debug, Clone, Default)]
+pub struct IdentityFlags {
+    /// Path to an age identity file. Env: `KERF_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`.
+    #[arg(long = "identity-file", value_name = "PATH")]
+    pub identity_file: Option<PathBuf>,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Create a `.kerf.yaml` config at the repository root.
-    Init {
-        /// Recipient(s) to record in the config.
-        #[arg(long = "recipient", value_name = "KEY")]
-        recipients: Vec<String>,
-    },
     /// Encrypt a plaintext file. Minimal-diff re-encryption if output exists.
     Encrypt {
-        /// Plaintext input file.
+        /// Plaintext input file (YAML).
         file: PathBuf,
-        /// Destination. If omitted, an in-place encrypt is performed.
+        /// Destination. If omitted, requires --in-place.
         #[arg(long, value_name = "PATH")]
         output: Option<PathBuf>,
-        /// Encrypt in place, replacing the input file atomically.
+        /// Replace the input file atomically with its encrypted form.
         #[arg(long, conflicts_with = "output")]
         in_place: bool,
+        /// Override the default encrypted-key regex.
+        #[arg(long, value_name = "REGEX")]
+        encrypted_regex: Option<String>,
+        #[command(flatten)]
+        recipients: RecipientFlags,
     },
     /// Decrypt to stdout or to a file.
     Decrypt {
@@ -58,11 +94,27 @@ enum Command {
         /// Destination. Stdout if omitted.
         #[arg(long, value_name = "PATH")]
         output: Option<PathBuf>,
+        #[command(flatten)]
+        identity: IdentityFlags,
     },
-    /// MAC + AAD integrity check. Does not produce decrypted output.
+    /// Integrity check (planned). Currently exits "not yet implemented".
     Verify {
         /// Encrypted file.
         file: PathBuf,
+    },
+    /// Initialise a `.kerf.yaml` config (planned).
+    Init {
+        /// Recipient(s) to record.
+        #[arg(long = "recipient", value_name = "KEY")]
+        recipients: Vec<String>,
+    },
+    /// Generate a fresh age keypair. Writes the secret key to disk (0600)
+    /// and prints the public recipient to stdout so it can be piped or
+    /// recorded in `.kerf.yaml`.
+    Keygen {
+        /// Path to write the secret key. Refuses to overwrite an existing file.
+        #[arg(short, long, value_name = "PATH")]
+        output: PathBuf,
     },
 }
 
@@ -70,21 +122,39 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
 
-    match run(cli.command) {
+    let result = match cli.command {
+        Command::Encrypt {
+            file,
+            output,
+            in_place,
+            encrypted_regex,
+            recipients,
+        } => run::encrypt(run::EncryptArgs {
+            file,
+            output,
+            in_place,
+            encrypted_regex,
+            recipients,
+        }),
+        Command::Decrypt {
+            file,
+            output,
+            identity,
+        } => run::decrypt(run::DecryptArgs {
+            file,
+            output,
+            identity,
+        }),
+        Command::Keygen { output } => run::keygen(output),
+        Command::Verify { .. } | Command::Init { .. } => Err(CliError::Unimplemented),
+    };
+
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("kerf: {err}");
             ExitCode::from(err.exit_code())
         }
-    }
-}
-
-fn run(cmd: Command) -> Result<(), CliError> {
-    match cmd {
-        Command::Init { .. }
-        | Command::Encrypt { .. }
-        | Command::Decrypt { .. }
-        | Command::Verify { .. } => Err(CliError::Unimplemented),
     }
 }
 
@@ -103,20 +173,68 @@ fn init_tracing(verbosity: u8) {
         .init();
 }
 
+/// CLI-layer error type. Each variant carries enough information to
+/// produce a specific exit code (SPEC § 7.6).
 #[derive(Debug, thiserror::Error)]
-enum CliError {
+pub enum CliError {
     #[error("not yet implemented")]
     Unimplemented,
-    #[allow(dead_code)] // wired up as real commands land
-    #[error("usage: {0}")]
+
+    #[error("{0}")]
     Usage(String),
+
+    #[error("{0}")]
+    BadInput(String),
+
+    #[error("no usable recipient: {0}")]
+    NoRecipient(String),
+
+    #[error("mac verification failed")]
+    MacFail,
+
+    #[error("aad mismatch at {0}")]
+    AadFail(String),
+
+    #[error("recipient unwrap failed: {0}")]
+    UnwrapFail(String),
+
+    #[error("{0}")]
+    Other(String),
 }
 
 impl CliError {
     fn exit_code(&self) -> u8 {
         match self {
-            Self::Unimplemented => exit::GENERIC,
+            Self::Unimplemented | Self::Other(_) => exit::GENERIC,
             Self::Usage(_) => exit::USAGE,
+            Self::BadInput(_) => exit::BAD_INPUT,
+            Self::NoRecipient(_) => exit::NO_RECIPIENT,
+            Self::MacFail => exit::MAC_FAIL,
+            Self::AadFail(_) => exit::AAD_FAIL,
+            Self::UnwrapFail(_) => exit::UNWRAP_FAIL,
         }
+    }
+}
+
+impl From<std::io::Error> for CliError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Other(e.to_string())
+    }
+}
+
+impl From<kerf_core::Error> for CliError {
+    fn from(e: kerf_core::Error) -> Self {
+        match e {
+            kerf_core::Error::Yaml(err) => Self::BadInput(format!("yaml: {err}")),
+            kerf_core::Error::AadMismatch(p) => Self::AadFail(p),
+            kerf_core::Error::Decrypt => Self::MacFail,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl From<kerf_kms::Error> for CliError {
+    fn from(e: kerf_kms::Error) -> Self {
+        Self::UnwrapFail(e.to_string())
     }
 }
