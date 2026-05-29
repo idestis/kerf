@@ -21,6 +21,7 @@ mod exit {
 
 mod config;
 mod io;
+mod keys;
 mod path;
 mod plumbing;
 mod recipients;
@@ -150,6 +151,12 @@ enum Command {
         #[arg(short, long, value_name = "PATH")]
         output: PathBuf,
     },
+    /// Manage recipients without rotating the DEK (add / remove / list).
+    /// Body ciphertexts and the MAC stay byte-identical.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
     /// Read-only decrypt to stdout. With --path, print just one value.
     View {
         /// Encrypted file.
@@ -230,6 +237,41 @@ enum Command {
     },
 }
 
+/// `kerf keys` subcommands. Recipient management never touches the DEK.
+#[derive(Subcommand, Debug)]
+enum KeysCommand {
+    /// Wrap the existing DEK for new recipient(s) and append them.
+    Add {
+        /// Encrypted file (mutated in place).
+        file: PathBuf,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        #[command(flatten)]
+        recipients: RecipientFlags,
+        #[command(flatten)]
+        identity: IdentityFlags,
+    },
+    /// Remove matching recipient(s). Refuses to remove the last one.
+    Remove {
+        /// Encrypted file (mutated in place).
+        file: PathBuf,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        #[command(flatten)]
+        recipients: RecipientFlags,
+    },
+    /// List the file's recipients (no DEKs).
+    List {
+        /// Encrypted file.
+        file: PathBuf,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
@@ -284,6 +326,29 @@ fn main() -> ExitCode {
             encrypted_regex,
             mac_all,
         }),
+        Command::Keys { command } => match command {
+            KeysCommand::Add {
+                file,
+                format,
+                recipients,
+                identity,
+            } => keys::add(keys::KeysAddArgs {
+                file,
+                format,
+                recipients,
+                identity,
+            }),
+            KeysCommand::Remove {
+                file,
+                format,
+                recipients,
+            } => keys::remove(keys::KeysRemoveArgs {
+                file,
+                format,
+                recipients,
+            }),
+            KeysCommand::List { file, format } => keys::list(file, format),
+        },
         Command::View {
             file,
             path,

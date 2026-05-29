@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use kerf_core::engine::{default_encrypted_regex, snapshot_previous};
 use kerf_core::{Dek, FileFormat, RecipientEntry};
-use kerf_kms::recipient::{Identity, Recipient};
+use kerf_kms::recipient::Identity;
 use regex::Regex;
 use serde_yaml::Value;
 
@@ -162,29 +162,7 @@ pub fn encrypt(args: EncryptArgs) -> Result<(), CliError> {
     // the on-disk `encrypted_dek` bytes are byte-identical too.
     let entries: Vec<RecipientEntry> = match existing_entries.as_ref() {
         Some(prev_entries) if recipients_match(prev_entries, &resolved) => prev_entries.clone(),
-        _ => {
-            let mut fresh = Vec::with_capacity(resolved.age.len());
-            for recipient in &resolved.age {
-                let wrapped = recipient.wrap(&dek)?;
-                fresh.push(recipient.entry(&wrapped));
-            }
-            #[cfg(feature = "aws-kms")]
-            for recipient in &resolved.aws_kms {
-                let wrapped = recipient.wrap(&dek)?;
-                fresh.push(recipient.entry(&wrapped));
-            }
-            #[cfg(feature = "gcp-kms")]
-            for recipient in &resolved.gcp_kms {
-                let wrapped = recipient.wrap(&dek)?;
-                fresh.push(recipient.entry(&wrapped));
-            }
-            #[cfg(feature = "azure-kv")]
-            for recipient in &resolved.azure_kv {
-                let wrapped = recipient.wrap(&dek)?;
-                fresh.push(recipient.entry(&wrapped));
-            }
-            fresh
-        }
+        _ => resolved.wrap_all(&dek)?,
     };
     if !resolved.unsupported.is_empty() {
         let kinds: Vec<&str> = resolved.unsupported.iter().map(|u| u.kind).collect();
@@ -589,7 +567,7 @@ fn same_set_owned(a: &[String], b: &[String]) -> bool {
 
 /// Normalize an Azure key URL to its unversioned `.../keys/<name>` form so a
 /// versioned stored kid and an unversioned supplied URL compare equal.
-fn azure_key_base(url: &str) -> String {
+pub(crate) fn azure_key_base(url: &str) -> String {
     match url.find("/keys/") {
         Some(idx) => {
             let rest = &url[idx + "/keys/".len()..];
@@ -603,7 +581,10 @@ fn azure_key_base(url: &str) -> String {
 /// Try every available identity against the recipient list. Returns the
 /// DEK from the first successful unwrap. Errors with exit-10 NoRecipient
 /// if none match.
-fn unwrap_any(recipients: &[RecipientEntry], identity: &ResolvedIdentity) -> Result<Dek, CliError> {
+pub(crate) fn unwrap_any(
+    recipients: &[RecipientEntry],
+    identity: &ResolvedIdentity,
+) -> Result<Dek, CliError> {
     let mut last_error: Option<String> = None;
     for entry in recipients {
         if let Some(age) = &identity.age {

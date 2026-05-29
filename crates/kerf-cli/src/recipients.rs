@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use kerf_core::{Dek, RecipientEntry};
 use kerf_kms::age::{AgeIdentity, AgeRecipient};
 #[cfg(feature = "aws-kms")]
 use kerf_kms::aws::{AwsKmsIdentity, AwsKmsRecipient};
@@ -20,6 +21,7 @@ use kerf_kms::aws::{AwsKmsIdentity, AwsKmsRecipient};
 use kerf_kms::azure::{AzureKvIdentity, AzureKvRecipient};
 #[cfg(feature = "gcp-kms")]
 use kerf_kms::gcp::{GcpKmsIdentity, GcpKmsRecipient};
+use kerf_kms::recipient::Recipient;
 
 use crate::{CliError, IdentityFlags, RecipientFlags};
 
@@ -173,6 +175,63 @@ impl ResolvedRecipients {
             azure_kv,
             unsupported,
         })
+    }
+
+    /// Wrap `dek` once per resolved recipient, producing the on-disk
+    /// `RecipientEntry` list. Each `wrap` uses a fresh CSPRNG nonce (the
+    /// `Recipient` contract), so this is safe to call for fresh wraps and
+    /// for re-wraps under an existing DEK (`keys add`).
+    pub fn wrap_all(&self, dek: &Dek) -> Result<Vec<RecipientEntry>, CliError> {
+        let mut out = Vec::new();
+        for recipient in &self.age {
+            out.push(recipient.entry(&recipient.wrap(dek)?));
+        }
+        #[cfg(feature = "aws-kms")]
+        for recipient in &self.aws_kms {
+            out.push(recipient.entry(&recipient.wrap(dek)?));
+        }
+        #[cfg(feature = "gcp-kms")]
+        for recipient in &self.gcp_kms {
+            out.push(recipient.entry(&recipient.wrap(dek)?));
+        }
+        #[cfg(feature = "azure-kv")]
+        for recipient in &self.azure_kv {
+            out.push(recipient.entry(&recipient.wrap(dek)?));
+        }
+        Ok(out)
+    }
+
+    /// Addressing key per resolved recipient: `(kind, normalized-id)`. Used by
+    /// `keys add`/`remove` to match against entries already in the file. Azure
+    /// ids are normalized to their unversioned base so a versioned stored kid
+    /// and an unversioned supplied URL compare equal.
+    #[must_use]
+    pub fn addrs(&self) -> Vec<(&'static str, String)> {
+        #[allow(unused_mut)]
+        let mut out: Vec<(&'static str, String)> = self
+            .age
+            .iter()
+            .map(|r| ("age", r.spec().to_string()))
+            .collect();
+        #[cfg(feature = "aws-kms")]
+        out.extend(
+            self.aws_kms
+                .iter()
+                .map(|r| ("aws-kms", r.arn().to_string())),
+        );
+        #[cfg(feature = "gcp-kms")]
+        out.extend(
+            self.gcp_kms
+                .iter()
+                .map(|r| ("gcp-kms", r.resource_id().to_string())),
+        );
+        #[cfg(feature = "azure-kv")]
+        out.extend(
+            self.azure_kv
+                .iter()
+                .map(|r| ("azure-kv", crate::run::azure_key_base(r.key_url()))),
+        );
+        out
     }
 }
 
