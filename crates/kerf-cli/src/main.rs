@@ -39,6 +39,10 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
+    /// Global identity (see `IdentityFlags`). Inherited by every subcommand.
+    #[command(flatten)]
+    identity: IdentityFlags,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -66,11 +70,14 @@ pub struct RecipientFlags {
     pub azure_kv: Vec<String>,
 }
 
-/// Identity flags — required only on `decrypt`.
+/// Identity flags — global, since unwrapping a DEK is cross-cutting: every
+/// command that decrypts (decrypt, verify, view, set, unset, rotate, keys
+/// add, mac) reads the same credential, with one meaning. Commands that don't
+/// decrypt simply ignore it. Defined once on `Cli` and inherited.
 #[derive(Args, Debug, Clone, Default)]
 pub struct IdentityFlags {
     /// Path to an age identity file. Env: `KERF_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`.
-    #[arg(long = "identity-file", value_name = "PATH")]
+    #[arg(long = "identity-file", value_name = "PATH", global = true)]
     pub identity_file: Option<PathBuf>,
 }
 
@@ -105,8 +112,6 @@ enum Command {
         /// Force the file format (overrides extension detection).
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
-        #[command(flatten)]
-        identity: IdentityFlags,
     },
     /// Verify file integrity: per-value AAD binding + whole-file MAC.
     /// Produces no plaintext. Exit 0 on integrity, non-zero otherwise
@@ -117,8 +122,6 @@ enum Command {
         /// Force the file format (overrides extension detection).
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
-        #[command(flatten)]
-        identity: IdentityFlags,
     },
     /// Initialise a `.kerf.yaml` config with a single creation rule.
     ///
@@ -162,8 +165,6 @@ enum Command {
         /// Force the file format (overrides extension detection).
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
-        #[command(flatten)]
-        identity: IdentityFlags,
     },
     /// Manage recipients without rotating the DEK (add / remove / list).
     /// Body ciphertexts and the MAC stay byte-identical.
@@ -181,8 +182,6 @@ enum Command {
         /// Force the file format (overrides extension detection).
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
-        #[command(flatten)]
-        identity: IdentityFlags,
     },
     /// Set one value (read from stdin) through the diff-aware encrypt path.
     /// Value never appears in argv. Mutates the file in place.
@@ -194,8 +193,6 @@ enum Command {
         /// Force the file format (overrides extension detection).
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
-        #[command(flatten)]
-        identity: IdentityFlags,
     },
     /// Remove one value through the diff-aware encrypt path. Mutates in place.
     Unset {
@@ -206,8 +203,6 @@ enum Command {
         /// Force the file format (overrides extension detection).
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
-        #[command(flatten)]
-        identity: IdentityFlags,
     },
     /// [plumbing] Print the `kerf:` block (without DEKs) as JSON.
     Metadata {
@@ -246,8 +241,6 @@ enum Command {
         /// Force the file format (overrides extension detection).
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
-        #[command(flatten)]
-        identity: IdentityFlags,
     },
 }
 
@@ -263,8 +256,6 @@ enum KeysCommand {
         format: Option<String>,
         #[command(flatten)]
         recipients: RecipientFlags,
-        #[command(flatten)]
-        identity: IdentityFlags,
     },
     /// Remove matching recipient(s). Refuses to remove the last one.
     Remove {
@@ -290,7 +281,14 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     init_tracing(cli.verbose);
 
-    let result = match cli.command {
+    // `identity` is a global flag (see `IdentityFlags`); pull it out once and
+    // hand it to whichever subcommand needs it. Match arms are exclusive, so
+    // moving it into the chosen arm is fine.
+    let Cli {
+        command, identity, ..
+    } = cli;
+
+    let result = match command {
         Command::Encrypt {
             file,
             output,
@@ -310,7 +308,6 @@ fn main() -> ExitCode {
             file,
             output,
             format,
-            identity,
         } => run::decrypt(run::DecryptArgs {
             file,
             output,
@@ -318,11 +315,7 @@ fn main() -> ExitCode {
             identity,
         }),
         Command::Keygen { output } => run::keygen(output),
-        Command::Verify {
-            file,
-            format,
-            identity,
-        } => run::verify(run::VerifyArgs {
+        Command::Verify { file, format } => run::verify(run::VerifyArgs {
             file,
             format,
             identity,
@@ -344,7 +337,6 @@ fn main() -> ExitCode {
             file,
             reason,
             format,
-            identity,
         } => run::rotate(run::RotateArgs {
             file,
             format,
@@ -356,7 +348,6 @@ fn main() -> ExitCode {
                 file,
                 format,
                 recipients,
-                identity,
             } => keys::add(keys::KeysAddArgs {
                 file,
                 format,
@@ -374,34 +365,19 @@ fn main() -> ExitCode {
             }),
             KeysCommand::List { file, format } => keys::list(file, format),
         },
-        Command::View {
-            file,
-            path,
-            format,
-            identity,
-        } => run::view(run::ViewArgs {
+        Command::View { file, path, format } => run::view(run::ViewArgs {
             file,
             path,
             format,
             identity,
         }),
-        Command::Set {
-            file,
-            path,
-            format,
-            identity,
-        } => run::set(run::SetArgs {
+        Command::Set { file, path, format } => run::set(run::SetArgs {
             file,
             path,
             format,
             identity,
         }),
-        Command::Unset {
-            file,
-            path,
-            format,
-            identity,
-        } => run::unset(run::UnsetArgs {
+        Command::Unset { file, path, format } => run::unset(run::UnsetArgs {
             file,
             path,
             format,
@@ -416,7 +392,6 @@ fn main() -> ExitCode {
             file,
             verify,
             format,
-            identity,
         } => {
             if verify {
                 run::mac_verify(run::VerifyArgs {
