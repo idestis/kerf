@@ -382,11 +382,15 @@ mod tests {
         )
         .unwrap();
 
-        // Reach into the kerf block's MAC envelope and flip a ciphertext byte.
+        // Reach into the kerf block's MAC envelope and corrupt a ciphertext
+        // byte. We swap one base64 character for a *different but still valid*
+        // one (A↔B) so the tamper always decodes to different ciphertext bytes
+        // — XOR-flipping a bit could land on an invalid base64 char and surface
+        // as an envelope-parse error instead of the MAC failure under test.
         let mac_str = encrypted["kerf"]["mac"].as_str().unwrap().to_string();
         let idx = mac_str.find("c:").expect("envelope has a c: section") + 4;
         let mut bytes = mac_str.into_bytes();
-        bytes[idx] ^= 1;
+        bytes[idx] = if bytes[idx] == b'A' { b'B' } else { b'A' };
         let tampered = String::from_utf8(bytes).unwrap();
         encrypted["kerf"]["mac"] = Value::String(tampered);
 
