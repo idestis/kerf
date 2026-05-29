@@ -12,11 +12,12 @@
 //!   so a single client serves every location.
 //! - `encrypted_dek`: base64 of the raw Cloud KMS ciphertext blob.
 //!
-//! Auth: the production path calls `ClientConfig::with_auth()`, which uses
-//! Google's standard credential discovery (`GOOGLE_APPLICATION_CREDENTIALS`,
-//! gcloud ADC, metadata server). When `KERF_KMS_ENDPOINT_GCP` is set the
-//! client is pointed at that endpoint with the no-op token source instead —
-//! intended for a local emulator (see the integration test notes).
+//! Connection: the production path uses gcloud-kms's high-level client over
+//! TLS, authenticated via `ClientConfig::with_auth()` (Google's standard
+//! credential discovery: `GOOGLE_APPLICATION_CREDENTIALS`, gcloud ADC,
+//! metadata server). When `KERF_KMS_ENDPOINT_GCP` is set we instead use the
+//! raw generated gRPC client over a plaintext channel — the high-level client
+//! can't reach a plaintext emulator (it hardcodes TLS). See `GcpConn`.
 
 use std::sync::OnceLock;
 
