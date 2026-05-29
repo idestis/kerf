@@ -197,6 +197,34 @@ pub fn decrypt(mut encrypted: EncryptedTree, dek: &Dek) -> Result<PlainTree> {
     Ok(encrypted)
 }
 
+/// Integrity check that produces **no plaintext**. SPEC § 7.4.
+///
+/// Runs exactly the cryptographic checks [`decrypt`] performs — per-value AAD
+/// binding (every `ENC[...]` leaf is opened with its dotted path as AAD) and
+/// the whole-file MAC — but drops the recovered plaintext instead of returning
+/// it. This guarantees `verify` and `decrypt` agree on integrity: a file that
+/// verifies will decrypt, and one that fails to verify will fail to decrypt.
+///
+/// Returns the number of encrypted leaves that were checked. The two failure
+/// modes are kept distinct so the CLI can map them to distinct exit codes
+/// (SPEC § 7.6) — a forensic responder must be able to tell them apart:
+///
+/// - [`Error::AadMismatch`] (exit 12): a ciphertext was moved between paths;
+///   its AAD no longer matches the path it now sits at.
+/// - [`Error::Decrypt`] (exit 11): the whole-file MAC does not match — the
+///   file is not what it claims to be (tampering or corruption).
+///
+/// The recovered plaintext lives only on the stack inside this call and is
+/// never returned, logged, or written anywhere.
+pub fn verify(mut encrypted: EncryptedTree, dek: &Dek) -> Result<usize> {
+    let block = extract_kerf_block(&mut encrypted)?;
+    let plaintexts = collect_plaintexts(&encrypted, dek)?;
+    if let Some(stored_mac) = &block.mac {
+        mac::verify(dek, &plaintexts, stored_mac)?;
+    }
+    Ok(plaintexts.len())
+}
+
 /// Decrypt without mutation — returns the previous-file snapshot used to
 /// drive the kerf rule on a subsequent encrypt.
 pub fn snapshot_previous(encrypted: &EncryptedTree, dek: &Dek) -> Result<PreviousFile> {
@@ -294,5 +322,75 @@ mod tests {
 
         assert_ne!(first["db"]["password"], second["db"]["password"]);
         assert_eq!(first["api"]["token"], second["api"]["token"]);
+    }
+
+    #[test]
+    fn verify_accepts_an_untampered_file() {
+        let dek = Dek::generate();
+        let plain: Value =
+            serde_yaml::from_str("db:\n  password: hunter2\napi:\n  token: tok\n").unwrap();
+        let encrypted = encrypt(
+            plain,
+            &dek,
+            &default_encrypted_regex(),
+            vec![fake_recipient()],
+            None,
+        )
+        .unwrap();
+        // Two encrypted leaves; verify counts them and returns Ok.
+        assert_eq!(verify(encrypted, &dek).unwrap(), 2);
+    }
+
+    #[test]
+    fn verify_rejects_a_swapped_envelope_as_aad_mismatch() {
+        // Moving a ciphertext between paths must surface as AAD mismatch
+        // (exit 12), not a MAC failure — the path-binding is what broke.
+        let dek = Dek::generate();
+        let plain: Value = serde_yaml::from_str("password: alpha\nsecret: beta\n").unwrap();
+        let mut encrypted = encrypt(
+            plain,
+            &dek,
+            &default_encrypted_regex(),
+            vec![fake_recipient()],
+            None,
+        )
+        .unwrap();
+
+        // Swap the two top-level envelopes.
+        let pw = encrypted["password"].clone();
+        let sec = encrypted["secret"].clone();
+        let map = encrypted.as_mapping_mut().unwrap();
+        map.insert(Value::String("password".into()), sec);
+        map.insert(Value::String("secret".into()), pw);
+
+        let err = verify(encrypted, &dek).unwrap_err();
+        assert!(matches!(err, Error::AadMismatch(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn verify_rejects_a_tampered_mac_as_decrypt_failure() {
+        // A bit flipped inside the MAC envelope must surface as a MAC failure
+        // (exit 11), distinct from the AAD path above.
+        let dek = Dek::generate();
+        let plain: Value = serde_yaml::from_str("password: hunter2\n").unwrap();
+        let mut encrypted = encrypt(
+            plain,
+            &dek,
+            &default_encrypted_regex(),
+            vec![fake_recipient()],
+            None,
+        )
+        .unwrap();
+
+        // Reach into the kerf block's MAC envelope and flip a ciphertext byte.
+        let mac_str = encrypted["kerf"]["mac"].as_str().unwrap().to_string();
+        let idx = mac_str.find("c:").expect("envelope has a c: section") + 4;
+        let mut bytes = mac_str.into_bytes();
+        bytes[idx] ^= 1;
+        let tampered = String::from_utf8(bytes).unwrap();
+        encrypted["kerf"]["mac"] = Value::String(tampered);
+
+        let err = verify(encrypted, &dek).unwrap_err();
+        assert!(matches!(err, Error::Decrypt), "got {err:?}");
     }
 }

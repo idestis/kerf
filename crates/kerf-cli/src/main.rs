@@ -104,10 +104,17 @@ enum Command {
         #[command(flatten)]
         identity: IdentityFlags,
     },
-    /// Integrity check (planned). Currently exits "not yet implemented".
+    /// Verify file integrity: per-value AAD binding + whole-file MAC.
+    /// Produces no plaintext. Exit 0 on integrity, non-zero otherwise
+    /// (SPEC § 7.6: 11 = MAC, 12 = AAD, 10/13 = recipient).
     Verify {
         /// Encrypted file.
         file: PathBuf,
+        /// Force the file format (overrides extension detection).
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        #[command(flatten)]
+        identity: IdentityFlags,
     },
     /// Initialise a `.kerf.yaml` config (planned).
     Init {
@@ -157,7 +164,16 @@ fn main() -> ExitCode {
             identity,
         }),
         Command::Keygen { output } => run::keygen(output),
-        Command::Verify { .. } | Command::Init { .. } => Err(CliError::Unimplemented),
+        Command::Verify {
+            file,
+            format,
+            identity,
+        } => run::verify(run::VerifyArgs {
+            file,
+            format,
+            identity,
+        }),
+        Command::Init { .. } => Err(CliError::Unimplemented),
     };
 
     match result {

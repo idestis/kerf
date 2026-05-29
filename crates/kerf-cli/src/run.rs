@@ -28,6 +28,12 @@ pub struct DecryptArgs {
     pub identity: IdentityFlags,
 }
 
+pub struct VerifyArgs {
+    pub file: PathBuf,
+    pub format: Option<String>,
+    pub identity: IdentityFlags,
+}
+
 /// Pick the on-disk format for a path: explicit --format override > extension
 /// detection > error. We don't default to YAML silently because doing so on
 /// an unrecognized extension would silently mis-parse the file.
@@ -231,6 +237,38 @@ pub fn decrypt(args: DecryptArgs) -> Result<(), CliError> {
         }
         None => write_stdout(serialized.as_bytes())?,
     }
+    Ok(())
+}
+
+pub fn verify(args: VerifyArgs) -> Result<(), CliError> {
+    let identity = ResolvedIdentity::resolve(&args.identity)?;
+    let format = resolve_format(&args.file, args.format.as_deref())?;
+
+    let raw = read(&args.file)?;
+    let tree: Value = format.parse(&raw).map_err(|e| {
+        CliError::BadInput(format!(
+            "{} parse {}: {e}",
+            format.name(),
+            args.file.display()
+        ))
+    })?;
+
+    // Find a recipient any of our identities can unwrap, exactly as decrypt
+    // does — verify needs the DEK to check the per-value AAD and the MAC.
+    let dek = {
+        let mut probe = tree.clone();
+        let block = kerf_core::engine::extract_kerf_block(&mut probe)?;
+        unwrap_any(&block.recipients, &identity)?
+    };
+
+    // engine::verify runs the same crypto checks as decrypt but discards the
+    // plaintext. Failures surface as distinct error types → distinct exit
+    // codes (AAD mismatch = 12, MAC failure = 11).
+    let count = kerf_core::engine::verify(tree, &dek)?;
+    eprintln!(
+        "kerf: {} OK — {count} encrypted value(s), MAC verified",
+        args.file.display()
+    );
     Ok(())
 }
 
