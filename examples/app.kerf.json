@@ -1,0 +1,26 @@
+{
+  "app": "checkout-web",
+  "env": "production",
+  "auth": {
+    "client_id": "checkout-web-prod",
+    "secret": "ENC[AES-GCM,n:tckZtaG3mZLyuOwI,c:e56qF+Wor9UGFk+4qBqx57V4FQ==,t:X2MV7/CWrvrcjnrMQX0ggA==]",
+    "token": "ENC[AES-GCM,n:/MT8O8KqrchCi5nX,c:EIuRJiiDYtMZWXR86OTmMg07i3Ucng==,t:FTfeqqEfxX4QwuFh2CiK8w==]"
+  },
+  "database": {
+    "host": "pg.prod.internal",
+    "password": "ENC[AES-GCM,n:igDcYZ/wwfcA2hfA,c:FRj5Kql+3y+LfaCDQA==,t:x1l/LpFxQwHNoLoxyIx39w==]"
+  },
+  "kerf": {
+    "version": 1,
+    "cipher": "aes-256-gcm",
+    "recipients": [
+      {
+        "type": "age",
+        "recipient": "age1aufk8k284xd903p37c9gx0g6rq5wckcecdmsxxs994qu00tphaeqjt880f",
+        "encrypted_dek": "YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB1cEIrT1Uzdk5SZjVhUU9OWFpNaGUyTmlmR1BwUW9uanJkcTI3Rzhsb1g4ClVwQU9tL20xUnFTcW1ZOWlDZHhDSmZXMjI1RnkveTNyNW8zb2lRbGtXR00KLT4gMT1fIW0wcC1ncmVhc2UKNUw1Y1FKdGk5Qi9EdWczSlVZc0FyVFlDZndHZVRXcDJOZHNkTGJKanRPS1dEZWQyc2ovMnQvTVdZb0Zab1EKLS0tIE1nN2k5TWRHZHVSdWlRS01kOUdNbjdpTm1ZRHY1aTdEdnNObGZrUTZqWFEKt/lmwUOfWNDAG7Q2RSLb03Ongrcb4fK0+Xx6rTSrl6+LBv8dF7JywChzjKeCIVmkCpo0YLiM2Zhw4j8F6PkAQA=="
+      }
+    ],
+    "encrypted_regex": "^(password|token|key|secret|credential)$",
+    "mac": "ENC[AES-GCM,n:9HfQG3CKtWxbnBJ8,c:nKlAhu8i/3DcxvKMauoi8cyw6VAKxWO6Dm+ORxzTVIg=,t:8vWIHZG2xKK5HipbTv6MbQ==]"
+  }
+}

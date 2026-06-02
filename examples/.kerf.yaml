@@ -1,0 +1,24 @@
+# .kerf.yaml -- kerf creation rules for the examples in this directory.
+# Files whose path matches a rule's path_regex are encrypted for that rule's
+# recipients. Rules are evaluated top-to-bottom; the first match wins.
+#
+# The recipient below is a THROWAWAY demo age key. Its secret half is NOT in
+# git (see .gitignore) -- the committed *.kerf.* files exist purely to show
+# the git diff behaviour. To run the flow yourself, see reproduce.sh, which
+# generates its own key.
+version: 1
+creation_rules:
+  # dotenv files use UPPERCASE keys, so match secret-shaped names case-insensitively.
+  - path_regex: \.kerf\.env$
+    recipients:
+      - type: age
+        recipient: age1aufk8k284xd903p37c9gx0g6rq5wckcecdmsxxs994qu00tphaeqjt880f
+    encrypted_regex: (?i)(password|token|key|secret|credential)$
+    mac_only_encrypted: true
+  # everything else: the built-in default (exact lowercase leaf-key match).
+  - path_regex: .*\.kerf\.[^.]+$
+    recipients:
+      - type: age
+        recipient: age1aufk8k284xd903p37c9gx0g6rq5wckcecdmsxxs994qu00tphaeqjt880f
+    encrypted_regex: ^(password|token|key|secret|credential)$
+    mac_only_encrypted: true

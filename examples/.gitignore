@@ -1,0 +1,5 @@
+# The demo age secret key is generated locally and never committed.
+# Only the public recipient (demo.pub) and the encrypted files are tracked.
+.keys/*.age
+.keys/*.key
+*.dec
