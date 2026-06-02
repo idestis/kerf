@@ -2,11 +2,13 @@
 
 > Diff-aware, KMS-first encryption for structured secret files.
 
+[![Documentation](https://img.shields.io/badge/docs-idestis.github.io%2Fkerf-2563eb)](https://idestis.github.io/kerf/)
+
 A kerf is the narrow cut a saw makes through wood — only the material along the blade's path is removed, the rest is untouched. `kerf` encrypts the same way: edit one value in a YAML/JSON/TOML/ENV/INI file, and only that value's ciphertext changes in git.
 
 Tools like SOPS reroll every nonce on every encrypt, so changing one secret produces a diff that touches every encrypted line. That makes code review of secret changes effectively impossible. `kerf` fixes this with a single invariant: **if a value's plaintext is unchanged, its on-disk ciphertext, nonce, and authentication tag are byte-identical to the previous version.**
 
-See [`SPEC.md`](SPEC.md) for the format and algorithm. See [`CLAUDE.md`](CLAUDE.md) for contributor rules.
+Full documentation — install, CLI reference, and per-provider guides — is at **[idestis.github.io/kerf](https://idestis.github.io/kerf/)**. See [`SPEC.md`](SPEC.md) for the format and algorithm, and [`CLAUDE.md`](CLAUDE.md) for contributor rules.
 
 ## Status
 
