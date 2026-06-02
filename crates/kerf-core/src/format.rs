@@ -59,16 +59,24 @@ pub fn collect_plaintexts(value: &Value, dek: &Dek) -> Result<LeafMap> {
 pub struct PreviousFile {
     /// `path -> (envelope_string, decrypted_plaintext)` for every encrypted leaf.
     pub by_path: HashMap<String, (String, Vec<u8>)>,
+    /// The previous `kerf.mac` envelope string, if the file had one. Lets the
+    /// engine keep the MAC byte-identical when no encrypted leaf changed.
+    pub mac: Option<String>,
 }
 
 impl PreviousFile {
     /// Build a snapshot from a decrypted-but-not-mutated previous file.
     /// `original` must still contain the `ENC[...]` envelopes; we read both
-    /// the envelope string and decrypt it for plaintext comparison.
+    /// the envelope string and decrypt it for plaintext comparison. The
+    /// caller is responsible for setting [`PreviousFile::mac`] — the kerf
+    /// block is stripped before this walk, so the MAC isn't visible here.
     pub fn build(original: &Value, dek: &Dek) -> Result<Self> {
         let mut by_path = HashMap::new();
         build_inner(original, "", dek, &mut by_path)?;
-        Ok(Self { by_path })
+        Ok(Self {
+            by_path,
+            mac: None,
+        })
     }
 }
 
