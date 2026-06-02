@@ -1,7 +1,7 @@
 environment: production
 database:
   host: db.internal
-  password: ENC[AES-GCM,n:0hcYOu/yjMaLX8tv,c:QFu1YTpel+Guq2X/mpjgvw==,t:3L1kq/8HbckGeLHbBcOAZQ==]
+  password: ENC[AES-GCM,n:dc4eFnldu/VAjbky,c:nuAvmVhGbUoguvH93mp9gb1C+gU=,t:cTMIpYQviUuhmUBX2REo7w==]
 api:
   token: ENC[AES-GCM,n:3XmcoOkK/euWsRkJ,c:PqJabzlqXIybCZEbDdQf,t:Q+DKv8algPjYF0PZBLeeXQ==]
 kerf:
@@ -12,4 +12,4 @@ kerf:
     recipient: age1aufk8k284xd903p37c9gx0g6rq5wckcecdmsxxs994qu00tphaeqjt880f
     encrypted_dek: YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSByOFk4M0tKajBWcFJKZ1M4SlJoeU5pR0xDOWViZzFtZ3YyZ3g1bVJzZXlBCmVHajMwdys2ODhiZUw3WHZMdXBEbkhKQ2Qvd2RzUXRickM5VmpnNEtrNG8KLT4gXk1gdF94OTwtZ3JlYXNlIEJ0TSIgfi17ZFggJGcgeT82TGAKZ3VxWVlZMUhIOXd3YXhBK2szc1U2dWFXaWcKLS0tIHRHZ2tPakxleHBNMDVMalFSRUtqQTZTTmc2NVZtUHRFOTZZOUlZUTU4MG8K9bBuTTjeX66gQATRxhixKGU45aZVJPZvwCrL+ajyseqnoeKo51FX01z1FiAdIE94aoN5aT42LUS4aykOvp+0Zw==
   encrypted_regex: ^(password|token|key|secret|credential)$
-  mac: ENC[AES-GCM,n:8ha8Z7kiE39RvTbr,c:KHag3aSEE7IW4R2/yS1J0PFQfVfIo/ZDDSfM1GCTZqk=,t:PHW45wRPSJXeqnoZ5wUftg==]
+  mac: ENC[AES-GCM,n:CLYuadXI1am4XXid,c:xfIRujqV3PrBfvcPtccl4SiNIGrBhE5KGJ725pV8044=,t:DMZ5wYwTsEbehjBMpd7iHA==]
