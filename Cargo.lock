@@ -2037,7 +2037,7 @@ dependencies = [
 
 [[package]]
 name = "kerf-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2054,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "kerf-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "kerf-kms"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "age",
  "async-trait",

@@ -3,6 +3,22 @@
 All notable changes to kerf.
 Format roughly follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.1] — 2026-06-02
+
+### Documentation
+
+- **examples:** Encrypt initial secrets (yaml/json/env)
+- **examples:** Rotate database.password -- one secret, one line
+- **examples:** Add cache.password without touching the old secrets
+- Link the examples/ diff demo from the README
+- Point example links at the post-rebase commit hashes
+- CLI reference split, key-provider guides, GFM fix; Homebrew tap publish (#3)
+- **readme:** Add documentation site badge and link (#4)
+
+### Security
+
+- **core:** Make file MAC diff-aware so no-op re-encrypt is byte-identical
+
 ## [0.2.0] — 2026-06-02
 
 ### Bug Fixes
