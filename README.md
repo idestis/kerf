@@ -99,7 +99,21 @@ kerf edit secrets/prod.kerf.yaml
 kerf verify secrets/prod.kerf.yaml
 ```
 
-The single line of diff after editing one value is the entire point.
+Editing one value touches one line of ciphertext (plus the one-line file MAC, which covers every encrypted leaf) — that minimal, reviewable diff is the entire point.
+
+## See it in git
+
+The [`examples/`](examples/) directory is a worked demonstration in real git
+history. Each step is its own commit, so you can click the diff and see the
+byte-identity rule hold:
+
+1. **[Encrypt](https://github.com/idestis/kerf/commit/22bee6c185122e49376829ecd402fb822234f7fd)** — six lines of plaintext config become `config.kerf.yaml`; only secret-shaped keys turn into `ENC[...]`.
+2. **[Change one secret](https://github.com/idestis/kerf/commit/ebf543d2b85fdc232dbda1f775071f7c4ed2329b)** — rotating `database.password` is a two-line diff: the value and the file MAC. `api.token` is byte-identical.
+3. **[Add a new secret](https://github.com/idestis/kerf/commit/3e1e8d81db723db35485ede72f1748c23eeee916)** — adding `cache.password` adds two lines and updates the MAC; every pre-existing ciphertext line is unchanged.
+
+Compare that to SOPS, where any encrypt rerolls every nonce and the diff
+touches every encrypted line. Run [`examples/reproduce.sh`](examples/reproduce.sh)
+to regenerate the whole flow locally with a throwaway key.
 
 ## Development
 
