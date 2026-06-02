@@ -52,14 +52,40 @@ fn build_mac_input(plaintexts: &std::collections::HashMap<String, Vec<u8>>) -> V
 ///
 /// `plaintexts` is the same `LeafMap` the engine already builds — caller
 /// passes it through so we don't decrypt the file twice.
+///
+/// The kerf rule applies to the MAC envelope exactly as it does to value
+/// envelopes: if `previous` authenticates the *same* HMAC tag we just
+/// computed, we keep it byte-for-byte (same nonce, ciphertext, tag) so a
+/// no-op re-encrypt produces no diff. A fresh nonce is generated only when
+/// the tag has actually changed — i.e. when some encrypted leaf changed,
+/// was added, or was removed. This upholds the AES-GCM nonce-uniqueness
+/// requirement: a fresh nonce is used for every distinct plaintext, and the
+/// only reuse is of an envelope whose plaintext is provably identical.
+///
+/// `previous` is the prior `kerf.mac` envelope string, if the file had one.
+/// If it fails to parse or open under `dek` (e.g. after DEK rotation), we
+/// fall through to a fresh seal.
 #[allow(clippy::implicit_hasher)] // internal API; LeafMap uses the default hasher
 pub fn compute(
     dek: &Dek,
     plaintexts: &std::collections::HashMap<String, Vec<u8>>,
+    previous: Option<&str>,
 ) -> Result<String> {
     let key = hmac::Key::new(hmac::HMAC_SHA256, dek.for_recipient());
     let input = build_mac_input(plaintexts);
     let tag = hmac::sign(&key, &input);
+
+    // The kerf rule for the MAC: reuse the previous envelope verbatim if it
+    // authenticates the identical tag under this DEK. Constant-time compare.
+    if let Some(prev) = previous {
+        if let Ok(envelope) = Envelope::parse(prev) {
+            if let Ok(old_tag) = open(dek, envelope.nonce(), &envelope.sealed, MAC_AAD) {
+                if old_tag.ct_eq(tag.as_ref()).into() {
+                    return Ok(prev.to_string());
+                }
+            }
+        }
+    }
 
     let nonce = Nonce::random();
     let nonce_bytes = *nonce.as_bytes();
@@ -125,15 +151,56 @@ mod tests {
     fn roundtrip() {
         let dek = Dek::generate();
         let leaves = sample_leaves();
-        let envelope = compute(&dek, &leaves).unwrap();
+        let envelope = compute(&dek, &leaves, None).unwrap();
         verify(&dek, &leaves, &envelope).unwrap();
+    }
+
+    #[test]
+    fn unchanged_leaves_reuse_envelope_verbatim() {
+        // The kerf rule for the MAC: a no-op re-encrypt keeps the envelope
+        // byte-identical (same nonce + ciphertext + tag) so git sees no diff.
+        let dek = Dek::generate();
+        let leaves = sample_leaves();
+        let first = compute(&dek, &leaves, None).unwrap();
+        let second = compute(&dek, &leaves, Some(&first)).unwrap();
+        assert_eq!(first, second, "no-op re-encrypt must not churn the MAC");
+        verify(&dek, &leaves, &second).unwrap();
+    }
+
+    #[test]
+    fn changed_leaves_reroll_nonce() {
+        // The corollary: when an encrypted leaf changes, the HMAC tag changes,
+        // so the MAC envelope MUST be resealed with a fresh nonce.
+        let dek = Dek::generate();
+        let leaves = sample_leaves();
+        let first = compute(&dek, &leaves, None).unwrap();
+
+        let mut changed = leaves.clone();
+        changed.insert("db.password".into(), b"rotated".to_vec());
+        let second = compute(&dek, &changed, Some(&first)).unwrap();
+        assert_ne!(first, second, "a changed leaf must reroll the MAC");
+        verify(&dek, &changed, &second).unwrap();
+    }
+
+    #[test]
+    fn previous_under_different_dek_is_ignored() {
+        // After DEK rotation the prior envelope won't open; we must fall
+        // through to a fresh seal rather than error or reuse it.
+        let old_dek = Dek::generate();
+        let leaves = sample_leaves();
+        let prior = compute(&old_dek, &leaves, None).unwrap();
+
+        let new_dek = Dek::generate();
+        let fresh = compute(&new_dek, &leaves, Some(&prior)).unwrap();
+        verify(&new_dek, &leaves, &fresh).unwrap();
+        assert!(verify(&old_dek, &leaves, &fresh).is_err());
     }
 
     #[test]
     fn tampered_plaintext_fails() {
         let dek = Dek::generate();
         let leaves = sample_leaves();
-        let envelope = compute(&dek, &leaves).unwrap();
+        let envelope = compute(&dek, &leaves, None).unwrap();
 
         let mut tampered = leaves.clone();
         tampered.insert("db.password".into(), b"different".to_vec());
@@ -145,7 +212,7 @@ mod tests {
     fn added_leaf_fails() {
         let dek = Dek::generate();
         let leaves = sample_leaves();
-        let envelope = compute(&dek, &leaves).unwrap();
+        let envelope = compute(&dek, &leaves, None).unwrap();
 
         let mut extra = leaves.clone();
         extra.insert("db.extra".into(), b"sneaked".to_vec());
@@ -157,7 +224,7 @@ mod tests {
     fn flipping_envelope_bit_fails() {
         let dek = Dek::generate();
         let leaves = sample_leaves();
-        let envelope = compute(&dek, &leaves).unwrap();
+        let envelope = compute(&dek, &leaves, None).unwrap();
         // flip one base64 char inside the ciphertext — the envelope still
         // parses but the tag check fails.
         let mut bytes: Vec<u8> = envelope.into_bytes();
@@ -175,7 +242,7 @@ mod tests {
     fn wrong_dek_fails() {
         let dek = Dek::generate();
         let leaves = sample_leaves();
-        let envelope = compute(&dek, &leaves).unwrap();
+        let envelope = compute(&dek, &leaves, None).unwrap();
         let other = Dek::generate();
         assert!(verify(&other, &leaves, &envelope).is_err());
     }

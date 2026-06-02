@@ -96,7 +96,8 @@ pub fn encrypt(
     let mut tree = plain;
     walk_encrypt(&mut tree, encrypted_regex, dek, previous)?;
 
-    let mac_envelope = mac::compute(dek, &plaintexts_for_mac)?;
+    let previous_mac = previous.and_then(|p| p.mac.as_deref());
+    let mac_envelope = mac::compute(dek, &plaintexts_for_mac, previous_mac)?;
 
     let block = KerfBlock {
         version: crate::kerf_block::FORMAT_VERSION,
@@ -229,8 +230,12 @@ pub fn verify(mut encrypted: EncryptedTree, dek: &Dek) -> Result<usize> {
 /// drive the kerf rule on a subsequent encrypt.
 pub fn snapshot_previous(encrypted: &EncryptedTree, dek: &Dek) -> Result<PreviousFile> {
     let mut clone = encrypted.clone();
-    let _ = extract_kerf_block(&mut clone)?;
-    PreviousFile::build(&clone, dek)
+    let block = extract_kerf_block(&mut clone)?;
+    let mut previous = PreviousFile::build(&clone, dek)?;
+    // Carry the prior MAC envelope so encrypt can keep it byte-identical when
+    // no encrypted leaf changed (the kerf rule, applied to the file MAC).
+    previous.mac = block.mac;
+    Ok(previous)
 }
 
 /// Default compiled regex — convenience for callers that don't configure.
