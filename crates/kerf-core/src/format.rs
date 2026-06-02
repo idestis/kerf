@@ -73,10 +73,7 @@ impl PreviousFile {
     pub fn build(original: &Value, dek: &Dek) -> Result<Self> {
         let mut by_path = HashMap::new();
         build_inner(original, "", dek, &mut by_path)?;
-        Ok(Self {
-            by_path,
-            mac: None,
-        })
+        Ok(Self { by_path, mac: None })
     }
 }
 
