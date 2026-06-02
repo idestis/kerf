@@ -4,8 +4,9 @@ name: Release
 # five target triples listed in SPEC § 10, packages each, computes
 # SHA-256 checksums, and creates the GitHub Release with git-cliff notes.
 #
-# Build-and-deliver only: signed/checksummed archives attached to the
-# GitHub Release. No package-manager publishing (no Homebrew tap).
+# Attaches signed/checksummed archives to the GitHub Release, then renders
+# a Homebrew formula from those archives and pushes it to the tap repo
+# (idestis/homebrew-kerf) using the cross-repo HOMEBREW_TAP_TOKEN secret.
 
 on:
   push:
@@ -164,3 +165,108 @@ jobs:
             --title "$TAG" \
             --notes-file "${{ steps.notes.outputs.changelog || 'RELEASE_NOTES.md' }}" \
             dist/*.tar.gz dist/*.zip dist/*.sha256 dist/SHA256SUMS
+
+  homebrew:
+    name: publish Homebrew formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Aggregate checksums
+        run: (cd dist && cat *.sha256 > SHA256SUMS)
+
+      - name: Check out the tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: idestis/homebrew-kerf
+          # Cross-repo write: GITHUB_TOKEN can't reach another repo, so use a
+          # fine-grained PAT scoped to homebrew-kerf (Contents: read/write).
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Render Formula/kerf.rb
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${GITHUB_REF_NAME}"
+          if [ -n "${{ github.event.inputs.tag || '' }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          VERSION="${TAG#v}"
+          URL_BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+
+          # Pull the per-target sha256 out of the aggregated SHA256SUMS.
+          sha() { awk -v f="kerf-v${VERSION}-$1.tar.gz" '$2==f {print $1}' dist/SHA256SUMS; }
+
+          for t in aarch64-apple-darwin x86_64-apple-darwin \
+                   aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+            [ -n "$(sha "$t")" ] || { echo "::error::missing sha256 for $t"; exit 1; }
+          done
+
+          mkdir -p tap/Formula
+          cat > tap/Formula/kerf.rb <<EOF
+          class Kerf < Formula
+            desc "Diff-aware, KMS-first encryption for structured secret files"
+            homepage "https://github.com/idestis/kerf"
+            version "${VERSION}"
+            license "Apache-2.0"
+
+            on_macos do
+              on_arm do
+                url "${URL_BASE}/kerf-v${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "$(sha aarch64-apple-darwin)"
+              end
+              on_intel do
+                url "${URL_BASE}/kerf-v${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "$(sha x86_64-apple-darwin)"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "${URL_BASE}/kerf-v${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "$(sha aarch64-unknown-linux-gnu)"
+              end
+              on_intel do
+                url "${URL_BASE}/kerf-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "$(sha x86_64-unknown-linux-gnu)"
+              end
+            end
+
+            def install
+              bin.install "kerf"
+            end
+
+            test do
+              assert_match "kerf #{version}", shell_output("#{bin}/kerf --version")
+            end
+          end
+          EOF
+
+          echo "::group::rendered formula"
+          cat tap/Formula/kerf.rb
+          echo "::endgroup::"
+
+      - name: Commit and push to the tap
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          if [ -n "${{ github.event.inputs.tag || '' }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          fi
+          cd tap
+          git config user.name  "kerf-release-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/kerf.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date for ${TAG}; nothing to push."
+            exit 0
+          fi
+          git commit -m "kerf ${TAG}"
+          git push

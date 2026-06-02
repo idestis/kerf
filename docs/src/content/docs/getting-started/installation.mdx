@@ -55,14 +55,16 @@ v0.1.x ships a compilable CLI stub; most subcommands exit `not yet implemented`.
   </TabItem>
 
   <TabItem label="Homebrew">
-    :::note[Planned]
-    A Homebrew tap at `idestis/homebrew-kerf` will land alongside the first stable release. Until then, use the GitHub Releases archives.
+    :::note
+    The formula is published to the [`idestis/homebrew-kerf`](https://github.com/idestis/homebrew-kerf) tap automatically on every release. It's available from the **next tagged release onward** — if `brew install` can't find it yet, no release has populated the tap; use the GitHub Releases archives in the meantime.
     :::
 
     ```bash
     brew tap idestis/kerf
     brew install kerf
     ```
+
+    The formula tracks the macOS (arm64/x86_64) and Linux (x86_64/aarch64) archives.
   </TabItem>
 </Tabs>
 
