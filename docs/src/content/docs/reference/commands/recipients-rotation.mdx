@@ -1,0 +1,90 @@
+---
+title: Recipients & rotation
+description: kerf init, keygen, keys, and rotate — set up config, manage who can decrypt, and rotate the DEK.
+---
+
+Commands for bootstrapping a project, generating keys, changing the recipient set, and rotating the data-encryption key. For the specifier formats and per-cloud auth, see [Key providers](/kerf/key-providers/overview/).
+
+## `kerf init`
+
+> Initialise a `.kerf.yaml` config with a single creation rule.
+
+```
+kerf init --recipient <type:value>... [-o PATH]
+          [--path-regex REGEX] [--encrypted-regex REGEX] [--mac-all]
+```
+
+| Flag | Purpose |
+|---|---|
+| `--recipient <type:value>` | Recipient to record. Repeatable; at least one required. Forms: `age:age1…`, `aws-kms:arn:…`, `gcp-kms:projects/…`, `azure-kv:https://…` (a bare `age1…` also works). |
+| `-o`, `--output <PATH>` | Destination. Defaults to `./.kerf.yaml`. |
+| `--path-regex <REGEX>` | Which files the rule applies to (default: any `*.kerf.*` file). |
+| `--encrypted-regex <REGEX>` | Which leaf keys get encrypted (default: the built-in regex). |
+| `--mac-all` | MAC over **all** leaves, not just encrypted ones. Catches changes to non-secret config at the cost of more diff churn. |
+
+```bash
+kerf init --recipient age:age1ql3z7d... -o .kerf.yaml
+```
+
+The creation rule lets you `kerf encrypt` without re-specifying recipients each time.
+
+## `kerf keygen`
+
+> Generate a fresh age keypair. Writes the secret key to disk (0600) and prints the public recipient to stdout.
+
+```
+kerf keygen -o <PATH>
+```
+
+| Flag | Purpose |
+|---|---|
+| `-o`, `--output <PATH>` | Where to write the secret key. Refuses to overwrite an existing file. |
+
+```bash
+kerf keygen -o ~/.config/kerf/age.key
+# prints: age1ql3z7d...
+```
+
+See [age](/kerf/key-providers/age/) for the full key lifecycle.
+
+## `kerf keys`
+
+> Manage recipients without rotating the DEK. Body ciphertexts and the MAC stay byte-identical.
+
+```
+kerf keys add    <file> [--age KEY] [--kms ARN] [--gcp-kms ID] [--azure-kv URL]
+kerf keys remove <file> [--age KEY] [--kms ARN] [--gcp-kms ID] [--azure-kv URL]
+kerf keys list   <file>
+```
+
+`add` wraps the existing DEK for new recipients and appends them; `remove` drops matching recipients (and refuses to remove the last one); `list` prints the current recipients (never the DEKs).
+
+```bash
+kerf keys add    secrets.kerf.yaml --age age1newteammate...
+kerf keys remove secrets.kerf.yaml --age age1formeremployee...
+kerf keys list   secrets.kerf.yaml
+```
+
+:::caution
+Removing a recipient stops *future* encryptions reaching it, but **historical git versions remain decryptable** by that key. If a key is compromised, rotate.
+:::
+
+## `kerf rotate`
+
+> Rotate the DEK: fresh key, re-encrypt every value with fresh nonces, re-wrap for the same recipients. The one command that rewrites the whole file.
+
+```
+kerf rotate <file> [--reason "<msg>"] [--format FORMAT]
+```
+
+| Flag | Purpose |
+|---|---|
+| `<file>` | Encrypted file (mutated in place). |
+| `--reason <MSG>` | Audit note for why the rotation happened. |
+| `--format <FORMAT>` | Force the file format. |
+
+```bash
+kerf rotate secrets.kerf.yaml --reason "quarterly rotation"
+```
+
+Rotation is the **only** operation that legitimately produces a full-file diff — every value gets a fresh nonce. Run it deliberately (key compromise, scheduled rotation), not as a routine edit.

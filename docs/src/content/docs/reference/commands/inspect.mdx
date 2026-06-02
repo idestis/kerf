@@ -1,0 +1,72 @@
+---
+title: Inspect
+description: kerf view, diff, and verify — read values, compare files, and check integrity.
+---
+
+Read-side commands: pull a value out, compare two encrypted files at the plaintext level, or check a file's integrity without revealing anything.
+
+## `kerf view`
+
+> Read-only decrypt to stdout. With `--path`, print just one value.
+
+```
+kerf view <file> [--path DOTTED.PATH] [--format FORMAT]
+```
+
+| Flag | Purpose |
+|---|---|
+| `<file>` | Encrypted file. |
+| `--path <DOTTED.PATH>` | Print a single value (e.g. `db.password`). Whole file if omitted. |
+| `--format <FORMAT>` | Force the file format. |
+
+```bash
+kerf view secrets.kerf.yaml --path db.password   # one value
+kerf view secrets.kerf.yaml                       # whole file, decrypted
+```
+
+## `kerf diff`
+
+> Decrypt two files and show their plaintext diff at the path level. Values are redacted unless `--show-values`.
+
+```
+kerf diff <old> <new> [--show-values] [--format FORMAT]
+```
+
+| Flag | Purpose |
+|---|---|
+| `<old>` / `<new>` | The two encrypted files to compare. |
+| `--show-values` | Reveal plaintext values in the diff. Off by default — paths only. |
+| `--format <FORMAT>` | Force the file format for both files. |
+
+```bash
+# Which paths changed, without exposing secrets
+kerf diff secrets.old.kerf.yaml secrets.kerf.yaml
+
+# Include the plaintext values (be careful where this output goes)
+kerf diff secrets.old.kerf.yaml secrets.kerf.yaml --show-values
+```
+
+By default `diff` reports *which* paths changed, not what they became — safe to paste into a review. This is the human-readable companion to the byte-level git diff that the [kerf rule](/kerf/concepts/the-kerf-rule/) keeps minimal.
+
+## `kerf verify`
+
+> Verify file integrity: per-value AAD binding + whole-file MAC. Produces no plaintext.
+
+```
+kerf verify <file> [--format FORMAT]
+```
+
+Checks that every value is bound to its path (AAD) and that the whole-file MAC matches. It emits no plaintext and exits non-zero on any integrity failure:
+
+| Exit | Meaning |
+|---|---|
+| `0` | Intact. |
+| `11` | MAC failure — contents don't match the file's claimed integrity (tampering/corruption). |
+| `12` | AAD failure — a ciphertext was moved to a different path. |
+| `10` / `13` | Recipient credential missing / unwrap denied. |
+
+```bash
+kerf verify secrets.kerf.yaml || echo "integrity check failed: $?"
+```
+
+See [exit codes](/kerf/reference/exit-codes/) for how to branch on these in a script, and why `11` and `12` are kept distinct.

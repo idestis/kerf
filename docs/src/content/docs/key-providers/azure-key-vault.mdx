@@ -1,0 +1,71 @@
+---
+title: Azure Key Vault
+description: Wrap the kerf DEK with an Azure Key Vault key.
+---
+
+Azure Key Vault wraps the DEK with a vault key using the **Wrap Key / Unwrap Key** operations (RSA-OAEP-256). Access is governed by Key Vault RBAC (or access policies) and recorded in the vault's diagnostic logs.
+
+Azure support is an **opt-in Cargo feature**. Build with it enabled:
+
+```bash
+cargo build --release -p kerf-cli --features azure-kv
+```
+
+If `--azure-kv` errors with `not yet implemented`, your binary was built without this feature.
+
+:::caution[Verification status]
+The Azure backend is code-complete and follows the same wrap/unwrap contract as AWS and GCP, but it has **not yet been verified end-to-end against an emulator** (no public emulator cleanly implements the Key Vault *Keys* API). Treat Azure support as preview: test against a real vault before relying on it for production secrets.
+:::
+
+## Specifier format
+
+| Context | Form | Example |
+|---|---|---|
+| `encrypt`, `keys add/remove` | `--azure-kv <url>` | `--azure-kv https://myvault.vault.azure.net/keys/mykey/abc123` |
+| `kerf init` | `azure-kv:<url>` | `azure-kv:https://myvault.vault.azure.net/keys/mykey/abc123` |
+
+The URL is `https://<vault>/keys/<name>[/<version>]`. If you omit the version, the vault's current version is used at encrypt time; kerf stores the **resolved versioned URL** on disk so Unwrap Key always targets the exact key that wrapped the DEK.
+
+## Authentication
+
+kerf authenticates with Azure's developer credential chain (`DeveloperToolsCredential`), which resolves:
+
+1. `az login` (Azure CLI) credentials
+2. Azure Developer CLI / other local developer tooling
+3. Managed identity / environment credentials where present
+
+If `az keyvault key list` works in your shell, kerf works.
+
+### Permissions
+
+The principal needs **Wrap Key** and **Unwrap Key** on the key:
+
+| Operation | Key permission |
+|---|---|
+| `encrypt`, `keys add`, `rotate` | `wrapKey` |
+| `decrypt`, `view`, `verify`, `edit`, `exec`, `set`, `unset` | `unwrapKey` |
+
+The built-in role **Key Vault Crypto User** covers both.
+
+## Worked example
+
+```bash
+az login
+export KERF_AZURE_KEYVAULT_URLS=https://myvault.vault.azure.net/keys/mykey
+
+kerf encrypt secrets.yaml --output secrets.kerf.yaml
+kerf view secrets.kerf.yaml --path db.password
+```
+
+Passing it explicitly instead:
+
+```bash
+kerf encrypt secrets.yaml --output secrets.kerf.yaml \
+  --azure-kv https://myvault.vault.azure.net/keys/mykey
+```
+
+## Notes
+
+- **Versioning matters:** because the versioned URL is pinned on disk, rotating the *vault key* to a new version does not break existing files — they keep unwrapping against the version that wrapped them. New encrypts pick up the current version.
+- **Disabled/deleted key versions** make the file undecryptable for that recipient — keep a second recipient for break-glass.
+- A denied Unwrap Key surfaces as [exit code 13](/kerf/reference/exit-codes/); a missing credential is exit 10.

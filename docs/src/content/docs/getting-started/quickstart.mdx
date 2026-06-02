@@ -7,15 +7,17 @@ description: Encrypt your first file with kerf and an age recipient.
 The flow described here is the **target UX** for v0.2. Subcommands currently exit with `not yet implemented`. Track [implementation status](https://github.com/idestis/kerf/issues) for what's actually live.
 :::
 
-We'll use an [age](https://age-encryption.org) recipient for the walkthrough — no cloud setup needed. KMS recipients (AWS, GCP, Azure) work the same way; only the recipient specifier changes.
+We'll use an [age](https://age-encryption.org) recipient for the walkthrough — no cloud setup needed. KMS recipients work the same way; only the recipient specifier changes. See [Key providers](/kerf/key-providers/overview/) for [AWS KMS](/kerf/key-providers/aws-kms/), [GCP KMS](/kerf/key-providers/gcp-kms/), and [Azure Key Vault](/kerf/key-providers/azure-key-vault/).
 
 ## 1. Generate a keypair
 
 ```bash
-brew install age   # or your distro's package
-age-keygen -o ~/.config/kerf/age.key
-# Public key: age1abcdef...
+kerf keygen -o ~/.config/kerf/age.key
+# Writes the secret key to disk (0600) and prints the public recipient:
+# age1abcdef...
 ```
+
+`kerf keygen` is a thin wrapper around age — `age-keygen -o ~/.config/kerf/age.key` produces an identical key if you'd rather use the upstream tool.
 
 The public key (`age1abcdef…`) is your **recipient** — anyone with this can encrypt *to* you. The private key in the file is what decrypts; keep it on the machine, never in the repo.
 
@@ -89,6 +91,12 @@ git diff secrets.kerf.yaml
 ```
 
 **Two lines changed.** The api.token ciphertext is byte-identical to the previous version. That's the kerf rule.
+
+For a scripted single-value change you don't need a plaintext file at all — `kerf set` reads the value from stdin and runs the same diff-aware path:
+
+```bash
+printf 'new-password' | kerf set secrets.kerf.yaml db.password
+```
 
 ## 6. Decrypt
 

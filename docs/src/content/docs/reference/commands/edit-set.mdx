@@ -1,0 +1,57 @@
+---
+title: Edit & set values
+description: kerf edit, set, and unset — change secrets and keep the diff to one line.
+---
+
+These commands change values in place and run the diff-aware encrypt path, so a single-value change produces a one-line git diff (plus the file MAC). All three write atomically — to a temp file in the same directory, then rename.
+
+## `kerf edit`
+
+> Decrypt → `$EDITOR` → minimal-diff re-encrypt on save. Atomic; the scratch plaintext is wiped on exit.
+
+```
+kerf edit <file> [--format FORMAT]
+```
+
+Opens the decrypted file in `$EDITOR`. On save, kerf re-encrypts only the values you changed; the scratch plaintext is zeroized and removed when the editor exits.
+
+```bash
+kerf edit secrets.kerf.yaml
+```
+
+## `kerf set`
+
+> Set one value, read from stdin, through the diff-aware encrypt path. The value never appears in argv.
+
+```
+kerf set <file> <path>
+```
+
+The new value is read from **stdin** — never a positional argument or flag — so it can't leak via shell history or `ps`. The path is dotted (`db.password`).
+
+```bash
+printf 'new-password' | kerf set secrets.kerf.yaml db.password
+
+# From a file, without the trailing newline ending up in the secret:
+kerf set secrets.kerf.yaml api.token < token.txt
+```
+
+Only the one value's ciphertext line and the MAC change in the resulting diff.
+
+## `kerf unset`
+
+> Remove one value through the diff-aware encrypt path.
+
+```
+kerf unset <file> <path>
+```
+
+```bash
+kerf unset secrets.kerf.yaml api.legacy_token
+```
+
+Removes the leaf at `path`, producing a one-line deletion plus the MAC update.
+
+---
+
+`set` and `unset` are built for scripts and automation; `edit` is the interactive path. For a non-interactive bulk change, edit the plaintext and re-run [`kerf encrypt --in-place`](/kerf/reference/commands/encrypt-decrypt/).

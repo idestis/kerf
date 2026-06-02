@@ -5,10 +5,17 @@
 
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import remarkGfm from "remark-gfm";
 
 export default defineConfig({
   site: "https://idestis.github.io",
   base: "/kerf",
+  // GFM (tables, strikethrough, autolinks) is not applied to .mdx content out
+  // of the box here, so wire remark-gfm in explicitly — without it the pipe
+  // tables across the docs render as raw `| … |` text.
+  markdown: {
+    remarkPlugins: [remarkGfm],
+  },
   integrations: [
     starlight({
       title: "kerf",
@@ -45,9 +52,29 @@ export default defineConfig({
           items: [{ slug: "concepts/the-kerf-rule" }],
         },
         {
+          label: "Key providers",
+          items: [
+            { slug: "key-providers/overview" },
+            { slug: "key-providers/age" },
+            { slug: "key-providers/aws-kms" },
+            { slug: "key-providers/gcp-kms" },
+            { slug: "key-providers/azure-key-vault" },
+          ],
+        },
+        {
           label: "Reference",
           items: [
             { slug: "reference/cli" },
+            {
+              label: "Commands",
+              items: [
+                { slug: "reference/commands/encrypt-decrypt" },
+                { slug: "reference/commands/edit-set" },
+                { slug: "reference/commands/inspect" },
+                { slug: "reference/commands/recipients-rotation" },
+                { slug: "reference/commands/plumbing" },
+              ],
+            },
             { slug: "reference/exit-codes" },
           ],
         },
