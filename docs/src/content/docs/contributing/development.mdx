@@ -67,7 +67,7 @@ The clap definitions live in `crates/kerf-cli/src/main.rs`. Adding a subcommand:
 2. Wire the match arm in `fn run` to call into `kerf-core` / `kerf-kms`.
 3. Decide the exit code on failure — see [exit codes](/kerf/reference/exit-codes/). Add to `mod exit` if a new code is needed (and update SPEC § 7.6 in the same PR).
 4. Update the [CLI reference page](/kerf/reference/cli/) to list the new command.
-5. If the command takes sensitive input, ensure it accepts `--stdin` and never accepts the value as a positional arg (avoids leaking via shell history and `ps`).
+5. If the command takes sensitive input, read it from stdin and never accept the value as a positional arg or flag (avoids leaking via shell history and `ps`). This is the convention `kerf set` follows.
 
 ## Adding a new KMS recipient
 
