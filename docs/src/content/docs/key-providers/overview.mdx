@@ -1,0 +1,81 @@
+---
+title: Key providers overview
+description: How kerf wraps the DEK for age and KMS recipients, the specifier formats, and the env vars that feed them.
+---
+
+Every encrypted file has one **data-encryption key (DEK)** that protects the values. kerf never stores the DEK in the clear — it wraps a copy for each **recipient** you list, and stores those wrapped copies in the `kerf:` block. Any one recipient's credential can unwrap the DEK and decrypt the file.
+
+A recipient is one of four kinds:
+
+| Provider | Wraps with | When to reach for it |
+|---|---|---|
+| [age](/kerf/key-providers/age/) | X25519 + ChaCha20-Poly1305 | Local dev, single maintainer, CI without a cloud. No infrastructure. |
+| [AWS KMS](/kerf/key-providers/aws-kms/) | `kms:Encrypt` under a CMK | You're on AWS and want IAM-governed access + CloudTrail audit. |
+| [GCP Cloud KMS](/kerf/key-providers/gcp-kms/) | `cryptoKeys.encrypt` | You're on GCP with IAM + Cloud Audit Logs. |
+| [Azure Key Vault](/kerf/key-providers/azure-key-vault/) | RSA-OAEP-256 Wrap Key | You're on Azure with RBAC + vault logs. |
+
+You can mix providers on a single file — e.g. an age recipient for local dev plus a KMS recipient for production. Add and remove them without re-encrypting the body; see [Recipients & rotation](/kerf/reference/commands/recipients-rotation/).
+
+## Recipient specifiers
+
+On `encrypt`, `keys add`, and `keys remove`, recipients are passed as repeatable flags:
+
+| Provider | Flag | Example |
+|---|---|---|
+| age | `--age <recipient>` | `--age age1ql3z7...` |
+| AWS KMS | `--kms <arn>` | `--kms arn:aws:kms:us-east-1:111122223333:key/abc-123` |
+| GCP KMS | `--gcp-kms <id>` | `--gcp-kms projects/p/locations/global/keyRings/r/cryptoKeys/k` |
+| Azure Key Vault | `--azure-kv <url>` | `--azure-kv https://myvault.vault.azure.net/keys/mykey/abc123` |
+
+`kerf init` records recipients in `.kerf.yaml` instead, using a `<type>:<value>` form so the kind is unambiguous:
+
+```bash
+kerf init \
+  --recipient age:age1ql3z7... \
+  --recipient aws-kms:arn:aws:kms:us-east-1:111122223333:key/abc-123 \
+  -o .kerf.yaml
+```
+
+Valid prefixes are `age:`, `aws-kms:`, `gcp-kms:`, and `azure-kv:`. A bare `age1…` is also accepted.
+
+All flags may be repeated for multiple recipients of the same kind. The flag names intentionally mirror SOPS so muscle memory carries over.
+
+## Environment variables
+
+To avoid passing recipients on every invocation, kerf reads several env vars. **SOPS-prefixed variables are honoured as a fallback**, so an existing SOPS setup keeps working unchanged.
+
+| Variable | Feeds |
+|---|---|
+| `KERF_AGE_RECIPIENTS` / `SOPS_AGE_RECIPIENTS` | Comma-separated age recipients |
+| `KERF_KMS_ARN` / `SOPS_KMS_ARN` | Comma-separated AWS KMS ARNs |
+| `KERF_GCP_KMS_IDS` / `SOPS_GCP_KMS_IDS` | Comma-separated GCP KMS resource IDs |
+| `KERF_AZURE_KEYVAULT_URLS` / `SOPS_AZURE_KEYVAULT_URLS` | Comma-separated Azure Key Vault key URLs |
+| `KERF_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE` | Path to an age private key file (for decrypt) |
+| `KERF_AGE_KEY` / `SOPS_AGE_KEY` | Inline age private key (for decrypt) |
+
+Precedence, highest to lowest:
+
+```
+explicit CLI flag  >  KERF_* env var  >  SOPS_* env var  >  .kerf.yaml creation rule
+```
+
+KMS providers authenticate through each cloud's standard credential chain — there are no kerf-specific credential env vars. See each provider page for the details.
+
+## Which providers are in your binary?
+
+KMS backends are **compile-time Cargo features**. The default build ships **AWS KMS only**; GCP and Azure are opt-in:
+
+```bash
+# Default: age + AWS KMS
+cargo build --release -p kerf-cli
+
+# Add the other providers
+cargo build --release -p kerf-cli --features gcp-kms,azure-kv
+
+# Everything
+cargo build --release -p kerf-cli --all-features
+```
+
+:::note
+If a recipient flag errors with `not yet implemented`, your binary was built **without** that provider's feature. Rebuild with the matching `--features` flag (above), or use a release archive that includes it.
+:::

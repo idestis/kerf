@@ -1,0 +1,64 @@
+---
+title: age
+description: Use an age keypair as a kerf recipient — no cloud, no infrastructure.
+---
+
+[age](https://age-encryption.org) is the zero-infrastructure recipient: a single keypair, no cloud account, no IAM. It's the right choice for local development, a single maintainer, or CI that shouldn't reach a cloud KMS. age recipients ship in **every** build of kerf (no Cargo feature required).
+
+Under the hood, age wraps the DEK with X25519 key agreement and ChaCha20-Poly1305 — the same primitives SOPS uses for its age recipients.
+
+## Specifier format
+
+| Context | Form | Example |
+|---|---|---|
+| `encrypt`, `keys add/remove` | `--age <recipient>` | `--age age1ql3z7d...` |
+| `kerf init` | `age:<recipient>` or bare | `age:age1ql3z7d...` |
+
+The **recipient** is the public key (`age1…`). Anyone holding it can encrypt *to* you; only the matching secret key can decrypt.
+
+## Generate a keypair
+
+```bash
+kerf keygen -o ~/.config/kerf/age.key
+# Writes the secret key to ~/.config/kerf/age.key (0600)
+# and prints the public recipient to stdout:
+# age1ql3z7d...
+```
+
+`kerf keygen` is a thin wrapper around age — `age-keygen -o ~/.config/kerf/age.key` produces an identical key.
+
+## Encrypt to an age recipient
+
+```bash
+kerf encrypt secrets.yaml \
+  --age age1ql3z7d... \
+  --output secrets.kerf.yaml
+```
+
+Or set it once via env so it doesn't appear on every command line:
+
+```bash
+export KERF_AGE_RECIPIENTS=age1ql3z7d...
+kerf encrypt secrets.yaml --output secrets.kerf.yaml
+```
+
+## Decrypt: where the private key comes from
+
+Decryption needs the **secret** key. kerf looks for it, in order:
+
+1. `--identity-file <path>` flag
+2. `KERF_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE` — path to a key file
+3. `KERF_AGE_KEY` / `SOPS_AGE_KEY` — the key inline
+
+```bash
+export SOPS_AGE_KEY_FILE=~/.config/kerf/age.key
+kerf decrypt secrets.kerf.yaml
+```
+
+The SOPS-prefixed variables are honoured so existing SOPS users need no changes.
+
+## Notes
+
+- Keep the secret key off the repo and off shared disks. The public recipient is safe to commit (e.g. in `.kerf.yaml`).
+- Removing an age recipient with `kerf keys remove` stops *future* encryptions reaching it, but **historical git versions remain decryptable** by that key. Rotate the DEK (`kerf rotate`) if a key is compromised.
+- For multiple maintainers, list multiple `--age` recipients — each gets its own wrapped DEK; the body ciphertext is shared and unchanged.

@@ -1,63 +1,55 @@
 ---
-title: CLI commands
-description: kerf command surface — porcelain, plumbing, flags, and usage examples.
+title: CLI overview
+description: The kerf command surface at a glance — porcelain, plumbing, global flags, and where each command is documented.
 ---
 
 :::caution[Pre-alpha]
-`kerf --help` and `kerf <subcommand> --help` are generated from the clap definitions in `kerf-cli/src/main.rs` and are the authoritative source. This page mirrors that surface; if the two ever disagree, trust `--help`. Some commands still exit `not yet implemented` — track [implementation status](https://github.com/idestis/kerf/issues).
+`kerf --help` and `kerf <subcommand> --help` are generated from the clap definitions in `kerf-cli/src/main.rs` and are the authoritative source. These pages mirror that surface; if the two ever disagree, trust `--help`. Some commands still exit `not yet implemented` — track [implementation status](https://github.com/idestis/kerf/issues).
 :::
 
-kerf follows git's split between **porcelain** (human-facing, may evolve) and **plumbing** (scriptable, stable contract).
+kerf follows git's split between **porcelain** (human-facing, may evolve) and **plumbing** (scriptable, stable contract). Each command is documented on a per-task page, linked from the tree below.
 
 ## Global flags
 
-These are accepted on every subcommand.
+Accepted on every subcommand:
 
 | Flag | Purpose |
 |---|---|
 | `-v`, `--verbose` | Increase log verbosity. Repeat (`-vv`) for more detail. |
-| `--identity-file <PATH>` | Path to an age identity file used to unwrap the DEK on decrypt. Env: `KERF_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`. |
-
-Every command that decrypts (`decrypt`, `verify`, `view`, `diff`, `edit`, `exec`, `set`, `unset`, `rotate`, `keys add`) reads the same identity; commands that don't decrypt ignore it.
+| `--identity-file <PATH>` | age identity file used to unwrap the DEK on decrypt. Env: `KERF_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE`. |
 
 ## Command tree
 
 ### Porcelain
 
 ```
-kerf init    --recipient <type:value>... [-o PATH] [--path-regex REGEX] [--encrypted-regex REGEX] [--mac-all]
-kerf keygen  -o <PATH>
-kerf encrypt <file> [--output PATH | --in-place] [--age KEY] [--kms ARN] [--gcp-kms ID] [--azure-kv URL] [--encrypted-regex REGEX] [--format FORMAT]
+# Encrypt, decrypt & exec
+kerf encrypt <file> [--output PATH | --in-place] [recipient flags] [--encrypted-regex REGEX] [--format FORMAT]
 kerf decrypt <file> [--output PATH] [--format FORMAT]
+kerf exec    <file> [--format FORMAT] -- <command> [args...]
+
+# Edit & set values
 kerf edit    <file> [--format FORMAT]
+kerf set     <file> <path>          # new value read from stdin, never argv
+kerf unset   <file> <path>
+
+# Inspect
 kerf view    <file> [--path DOTTED.PATH] [--format FORMAT]
 kerf diff    <old> <new> [--show-values] [--format FORMAT]
-kerf exec    <file> [--format FORMAT] -- <command> [args...]
+kerf verify  <file> [--format FORMAT]
+
+# Recipients & rotation
+kerf init    --recipient <type:value>... [-o PATH] [--path-regex REGEX] [--encrypted-regex REGEX] [--mac-all]
+kerf keygen  -o <PATH>
+kerf keys    add|remove <file> [recipient flags]
+kerf keys    list <file>
+kerf rotate  <file> [--reason "<msg>"] [--format FORMAT]
 ```
 
-### Recipient management
-
-Recipient changes re-wrap the DEK only; body ciphertexts and the MAC stay byte-identical.
-
-```
-kerf keys add    <file> [--age KEY] [--kms ARN] [--gcp-kms ID] [--azure-kv URL]
-kerf keys remove <file> [--age KEY] [--kms ARN] [--gcp-kms ID] [--azure-kv URL]
-kerf keys list   <file>
-```
-
-### Rotation
-
-```
-kerf rotate <file> [--reason "<msg>"] [--format FORMAT]
-```
-
-### Operational
-
-```
-kerf verify <file> [--format FORMAT]
-kerf set    <file> <path>          # new value is read from stdin, never argv
-kerf unset  <file> <path>
-```
+- [Encrypt, decrypt & exec](/kerf/reference/commands/encrypt-decrypt/)
+- [Edit & set values](/kerf/reference/commands/edit-set/)
+- [Inspect](/kerf/reference/commands/inspect/)
+- [Recipients & rotation](/kerf/reference/commands/recipients-rotation/)
 
 ### Plumbing (stable)
 
@@ -68,94 +60,15 @@ kerf mac --verify   <file>
 kerf path-encrypted <file> <path>   # exit 0 if encrypted, 1 if not — quiet
 ```
 
-## Usage examples
+- [Plumbing commands](/kerf/reference/commands/plumbing/)
 
-### Set up a config and a key
+## Recipients & environment
 
-```bash
-# Generate an age keypair (secret written 0600; recipient printed to stdout)
-kerf keygen -o ~/.config/kerf/age.key
+The recipient flags (`--age`, `--kms`, `--gcp-kms`, `--azure-kv`), their `<type:value>` forms for `kerf init`, and the `KERF_*` / `SOPS_*` environment variables that feed them are documented under [Key providers](/kerf/key-providers/overview/).
 
-# Record a creation rule in .kerf.yaml. Recipients are <type>:<value>:
-#   age:age1…  aws-kms:arn:aws:kms:…  gcp-kms:projects/…  azure-kv:https://…
-kerf init --recipient age:age1abcdef... -o .kerf.yaml
-```
+## Exit codes
 
-### Encrypt and re-encrypt
-
-```bash
-# First encrypt
-kerf encrypt secrets.yaml --age age1abcdef... --output secrets.kerf.yaml
-
-# Re-encrypt in place: unchanged values keep their exact ciphertext (the kerf rule)
-kerf encrypt secrets.kerf.yaml --in-place
-```
-
-### Change one value (one-line diff)
-
-```bash
-# Value comes from stdin, so it never lands in your shell history or argv
-printf 'new-password' | kerf set secrets.kerf.yaml db.password
-
-kerf unset secrets.kerf.yaml api.legacy_token
-```
-
-### Read and inspect
-
-```bash
-kerf view secrets.kerf.yaml --path db.password   # one value to stdout
-kerf decrypt secrets.kerf.yaml                    # whole file to stdout
-kerf diff old.kerf.yaml new.kerf.yaml             # path-level diff, values redacted
-kerf verify secrets.kerf.yaml                     # integrity check, no plaintext
-```
-
-### Run a process with secrets in its environment
-
-```bash
-# Decrypts in memory, exports UPPER_SNAKE_CASE env vars, execs. No temp file.
-kerf exec secrets.kerf.yaml -- ./my-app --serve
-```
-
-### Manage recipients and rotate
-
-```bash
-kerf keys add    secrets.kerf.yaml --age age1newteammate...
-kerf keys remove secrets.kerf.yaml --age age1formeremployee...
-kerf keys list   secrets.kerf.yaml
-
-# Fresh DEK + fresh nonces for every value — the one command that rewrites the whole file
-kerf rotate secrets.kerf.yaml --reason "quarterly rotation"
-```
-
-## Recipient specifiers
-
-`encrypt` and `keys add`/`keys remove` take recipients as repeatable flags:
-
-| Type | Flag | Example |
-|---|---|---|
-| AWS KMS | `--kms <arn>` | `--kms arn:aws:kms:us-east-1:111:key/prod-secrets` |
-| GCP KMS | `--gcp-kms <id>` | `--gcp-kms projects/p/locations/l/keyRings/r/cryptoKeys/k` |
-| Azure Key Vault | `--azure-kv <url>` | `--azure-kv https://vault.vault.azure.net/keys/mykey/version` |
-| age | `--age <recipient>` | `--age age1abcdef…` |
-
-`init` records recipients in `.kerf.yaml` instead, using the `<type>:<value>` form (`aws-kms:`, `gcp-kms:`, `azure-kv:`, `age:`; a bare `age1…` is also accepted).
-
-All flags may be repeated for multiple recipients. The recipient flags are intentionally compatible with SOPS so muscle memory carries over.
-
-## Environment variables
-
-To avoid passing recipients on every invocation, kerf reads several env vars. **SOPS-prefixed env vars are honoured as fallback** so existing SOPS users can keep their env setup unchanged.
-
-| Variable | Purpose |
-|---|---|
-| `KERF_KMS_ARN` / `SOPS_KMS_ARN` | Comma-separated AWS KMS ARNs |
-| `KERF_GCP_KMS_IDS` / `SOPS_GCP_KMS_IDS` | Comma-separated GCP KMS resource IDs |
-| `KERF_AZURE_KEYVAULT_URLS` / `SOPS_AZURE_KEYVAULT_URLS` | Comma-separated Azure Key Vault key URLs |
-| `KERF_AGE_RECIPIENTS` / `SOPS_AGE_RECIPIENTS` | Comma-separated age recipients |
-| `KERF_AGE_KEY_FILE` / `SOPS_AGE_KEY_FILE` | Path to age private key file (for decrypt) |
-| `KERF_AGE_KEY` / `SOPS_AGE_KEY` | Inline age private key (for decrypt) |
-
-Precedence: explicit CLI flag > `KERF_*` env var > `SOPS_*` env var > `.kerf.yaml` creation rules.
+Commands signal outcomes through [exit codes](/kerf/reference/exit-codes/) — a stable contract that scripts should switch on rather than parsing stderr.
 
 ## Planned commands
 
@@ -163,7 +76,3 @@ These appear in [SPEC.md](https://github.com/idestis/kerf/blob/main/SPEC.md) §7
 
 - `kerf updatekeys <file>` — reconcile a file's recipients against `.kerf.yaml` (add missing, remove stale) without rotating the DEK.
 - `kerf import-sops <file>` — one-time conversion of an existing SOPS file to the kerf format.
-
-## Exit codes
-
-See [exit codes](/kerf/reference/exit-codes/).

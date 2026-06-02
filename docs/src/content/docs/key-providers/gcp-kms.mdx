@@ -1,0 +1,68 @@
+---
+title: GCP Cloud KMS
+description: Wrap the kerf DEK with a Google Cloud KMS crypto key.
+---
+
+GCP Cloud KMS wraps the DEK under a crypto key using `cryptoKeys.encrypt` / `decrypt`. Access is governed by Cloud IAM and unwraps are recorded in Cloud Audit Logs.
+
+GCP support is an **opt-in Cargo feature**. Build with it enabled:
+
+```bash
+cargo build --release -p kerf-cli --features gcp-kms
+```
+
+If `--gcp-kms` errors with `not yet implemented`, your binary was built without this feature.
+
+## Specifier format
+
+| Context | Form | Example |
+|---|---|---|
+| `encrypt`, `keys add/remove` | `--gcp-kms <id>` | `--gcp-kms projects/my-proj/locations/global/keyRings/my-ring/cryptoKeys/my-key` |
+| `kerf init` | `gcp-kms:<id>` | `gcp-kms:projects/my-proj/locations/global/keyRings/my-ring/cryptoKeys/my-key` |
+
+The identifier is the full crypto-key **resource id**: `projects/P/locations/L/keyRings/R/cryptoKeys/K`.
+
+## Authentication
+
+kerf uses **Application Default Credentials (ADC)** — the same discovery Google's own tools use:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service-account key file
+2. `gcloud auth application-default login` credentials
+3. The attached service account on GCE / GKE / Cloud Run (metadata server)
+
+If `gcloud kms encrypt` works in your shell, kerf works.
+
+### IAM permissions
+
+Grant the principal these roles (or the equivalent fine-grained permissions) on the crypto key:
+
+| Operation | Permission |
+|---|---|
+| `encrypt`, `keys add`, `rotate` | `cloudkms.cryptoKeyVersions.useToEncrypt` |
+| `decrypt`, `view`, `verify`, `edit`, `exec`, `set`, `unset` | `cloudkms.cryptoKeyVersions.useToDecrypt` |
+
+The roles `roles/cloudkms.cryptoKeyEncrypter` and `roles/cloudkms.cryptoKeyDecrypter` cover these.
+
+## Worked example
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=~/sa-key.json
+export KERF_GCP_KMS_IDS=projects/my-proj/locations/global/keyRings/my-ring/cryptoKeys/my-key
+
+kerf encrypt secrets.yaml --output secrets.kerf.yaml
+kerf view secrets.kerf.yaml --path db.password
+```
+
+Passing it explicitly instead:
+
+```bash
+kerf encrypt secrets.yaml --output secrets.kerf.yaml \
+  --gcp-kms projects/my-proj/locations/global/keyRings/my-ring/cryptoKeys/my-key
+```
+
+## Notes
+
+- **Key versions:** GCP resolves the primary version on encrypt and records enough to decrypt; you reference the crypto key, not a specific version.
+- **Disabled/destroyed key versions** make the file undecryptable for that recipient — keep a second recipient for break-glass.
+- A denied `decrypt` surfaces as [exit code 13](/kerf/reference/exit-codes/); a missing credential is exit 10.
+- **Local testing:** point at a fake Cloud KMS gRPC endpoint with `KERF_KMS_ENDPOINT_GCP=localhost:9010`.

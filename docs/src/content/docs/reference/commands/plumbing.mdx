@@ -1,0 +1,64 @@
+---
+title: Plumbing
+description: kerf recipients, metadata, mac, and path-encrypted — stable, scriptable contracts.
+---
+
+Plumbing commands are the **stable** half of the CLI. Their stdout format and exit codes are a contract (SPEC § 7.5–7.6) — they won't change meaning between minor releases, so scripts can rely on them. They never emit plaintext values.
+
+## `kerf metadata`
+
+> Print the `kerf:` block (without DEKs) as JSON.
+
+```
+kerf metadata <file> [--format FORMAT]
+```
+
+Dumps the file's metadata — version, cipher, recipients (without the wrapped DEKs), MAC settings — as JSON for tooling to parse.
+
+```bash
+kerf metadata secrets.kerf.yaml | jq .cipher
+```
+
+## `kerf recipients`
+
+> Print the recipient list (without DEKs) as JSON.
+
+```
+kerf recipients <file> [--format FORMAT]
+```
+
+A focused view of just the recipients — type and identifier, never the wrapped key material.
+
+```bash
+kerf recipients secrets.kerf.yaml | jq -r '.[].type'
+```
+
+## `kerf mac --verify`
+
+> Whole-file MAC operations. `--verify` is currently the only mode and is required.
+
+```
+kerf mac --verify <file> [--format FORMAT]
+```
+
+Verifies the whole-file MAC and exits accordingly ([exit 11](/kerf/reference/exit-codes/) on failure). This is the MAC half of [`kerf verify`](/kerf/reference/commands/inspect/), exposed on its own for scripts that only need the integrity check.
+
+```bash
+kerf mac --verify secrets.kerf.yaml
+```
+
+## `kerf path-encrypted`
+
+> Exit 0 if the path's leaf key is encrypted per the file's regex, exit 1 otherwise. Quiet — the exit code is the signal.
+
+```
+kerf path-encrypted <file> <path> [--format FORMAT]
+```
+
+Prints nothing; the exit code answers "is this path encrypted?". Useful in pre-commit hooks and policy checks.
+
+```bash
+if kerf path-encrypted secrets.kerf.yaml db.password; then
+  echo "db.password is encrypted"
+fi
+```

@@ -52,9 +52,29 @@ export default defineConfig({
           items: [{ slug: "concepts/the-kerf-rule" }],
         },
         {
+          label: "Key providers",
+          items: [
+            { slug: "key-providers/overview" },
+            { slug: "key-providers/age" },
+            { slug: "key-providers/aws-kms" },
+            { slug: "key-providers/gcp-kms" },
+            { slug: "key-providers/azure-key-vault" },
+          ],
+        },
+        {
           label: "Reference",
           items: [
             { slug: "reference/cli" },
+            {
+              label: "Commands",
+              items: [
+                { slug: "reference/commands/encrypt-decrypt" },
+                { slug: "reference/commands/edit-set" },
+                { slug: "reference/commands/inspect" },
+                { slug: "reference/commands/recipients-rotation" },
+                { slug: "reference/commands/plumbing" },
+              ],
+            },
             { slug: "reference/exit-codes" },
           ],
         },

@@ -1,0 +1,79 @@
+---
+title: Encrypt, decrypt & exec
+description: kerf encrypt, decrypt, and exec — get plaintext into a kerf file and back out.
+---
+
+The endpoints of the workflow: `encrypt` produces a kerf file from plaintext, `decrypt` recovers the plaintext, and `exec` feeds secrets straight into a process without ever writing plaintext to disk. Re-running `encrypt` over an existing kerf file is the diff-aware path — unchanged values keep their exact ciphertext (the [kerf rule](/kerf/concepts/the-kerf-rule/)).
+
+## `kerf encrypt`
+
+> Encrypt a plaintext file. Minimal-diff re-encryption if the output already exists.
+
+```
+kerf encrypt <file> [--output PATH | --in-place]
+                    [--age KEY] [--kms ARN] [--gcp-kms ID] [--azure-kv URL]
+                    [--encrypted-regex REGEX] [--format FORMAT]
+```
+
+| Flag | Purpose |
+|---|---|
+| `<file>` | Plaintext input (YAML, JSON, TOML, ENV). |
+| `--output <PATH>` | Destination. If omitted, `--in-place` is required. |
+| `--in-place` | Replace the input file atomically with its encrypted form. Conflicts with `--output`. |
+| `--age` / `--kms` / `--gcp-kms` / `--azure-kv` | Recipients to wrap the DEK for. Repeatable. See [Key providers](/kerf/key-providers/overview/). |
+| `--encrypted-regex <REGEX>` | Override which leaf keys get encrypted (default matches `password\|token\|key\|secret\|credential`). |
+| `--format <FORMAT>` | Force the file format instead of inferring from the extension. |
+
+```bash
+# First encrypt
+kerf encrypt secrets.yaml --age age1ql3z7d... --output secrets.kerf.yaml
+
+# Re-encrypt in place: only changed values get fresh ciphertext
+kerf encrypt secrets.kerf.yaml --in-place
+```
+
+Re-encrypting verifies the existing file's MAC first — kerf refuses to re-sign a tampered file.
+
+## `kerf decrypt`
+
+> Decrypt to stdout, or to a file with `--output`.
+
+```
+kerf decrypt <file> [--output PATH] [--format FORMAT]
+```
+
+| Flag | Purpose |
+|---|---|
+| `<file>` | Encrypted file. |
+| `--output <PATH>` | Destination. Prints to stdout if omitted. |
+| `--format <FORMAT>` | Force the file format. |
+
+```bash
+kerf decrypt secrets.kerf.yaml                      # to stdout
+kerf decrypt secrets.kerf.yaml --output secrets.yaml
+```
+
+Decryption needs a recipient credential — see the [Key providers](/kerf/key-providers/overview/) pages for how each one is resolved.
+
+## `kerf exec`
+
+> Decrypt into the child's environment and exec a command. No temp files.
+
+```
+kerf exec <file> [--format FORMAT] -- <command> [args...]
+```
+
+| Flag | Purpose |
+|---|---|
+| `<file>` | Encrypted file. |
+| `--format <FORMAT>` | Force the file format. |
+| `-- <command> [args...]` | The command to run, after `--`. Required. |
+
+Each decrypted value becomes an environment variable in the child process, with the dotted path upper-snake-cased (`db.password` → `DB_PASSWORD`). The plaintext lives only in memory for the lifetime of the call — nothing touches disk, and `kerf` does not echo the values.
+
+```bash
+kerf exec secrets.kerf.yaml -- ./my-app --serve
+# DB_PASSWORD=… API_TOKEN=… are set in my-app's environment
+```
+
+This is the preferred way to hand secrets to a process — reach for it instead of `decrypt --output` whenever you can.

@@ -1,0 +1,63 @@
+---
+title: AWS KMS
+description: Wrap the kerf DEK with an AWS KMS customer-managed key.
+---
+
+AWS KMS wraps the DEK under a customer-managed key (CMK) using `kms:Encrypt` / `kms:Decrypt`. Access is governed by IAM and every unwrap shows up in CloudTrail — so "who can read these secrets" and "who did read them" are answered by your existing AWS controls, not by kerf.
+
+AWS KMS is part of the **default** build (`default = ["aws-kms"]`), so a stock `cargo install` / release binary includes it.
+
+## Specifier format
+
+| Context | Form | Example |
+|---|---|---|
+| `encrypt`, `keys add/remove` | `--kms <arn>` | `--kms arn:aws:kms:us-east-1:111122223333:key/abc-123` |
+| `kerf init` | `aws-kms:<arn>` | `aws-kms:arn:aws:kms:us-east-1:111122223333:key/abc-123` |
+
+A key ARN or an alias ARN both work. kerf reads the **region** straight from the ARN's third field, so you don't configure it separately.
+
+## Authentication
+
+kerf uses the **AWS SDK default credential chain** — the same resolution order as the AWS CLI:
+
+1. Environment (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`)
+2. Shared config/credentials (`~/.aws/credentials`, `AWS_PROFILE`)
+3. Container / IMDS instance role (ECS, EC2, EKS IRSA)
+
+There are no kerf-specific credential variables; if `aws kms encrypt` works in your shell, kerf works.
+
+### IAM permissions
+
+| Operation | Action needed on the CMK |
+|---|---|
+| `encrypt`, `keys add`, `rotate` | `kms:Encrypt` |
+| `decrypt`, `view`, `verify`, `edit`, `exec`, `set`, `unset` | `kms:Decrypt` |
+
+## Worked example
+
+```bash
+# Set the recipient via env so it isn't repeated on every command
+export KERF_KMS_ARN=arn:aws:kms:us-east-1:111122223333:key/abc-123
+
+kerf encrypt secrets.yaml --output secrets.kerf.yaml
+kerf view secrets.kerf.yaml --path db.password
+```
+
+Or pass it explicitly, and combine providers (here, KMS for prod + age for local dev):
+
+```bash
+kerf encrypt secrets.yaml --output secrets.kerf.yaml \
+  --kms arn:aws:kms:us-east-1:111122223333:key/abc-123 \
+  --age age1ql3z7d...
+```
+
+## Encryption context
+
+kerf binds an **encryption context** to the wrapped DEK, which KMS authenticates on `Decrypt`. A `kms:Decrypt` call whose context doesn't match is rejected by KMS itself — an extra integrity check on top of kerf's own AAD binding. This is automatic; you don't pass it.
+
+## Notes
+
+- **Cross-region:** the ARN carries the region, so files wrapped for an ARN in another region just work as long as your credentials can reach it.
+- **Key revocation:** disabling or scheduling deletion of the CMK makes the file undecryptable for that recipient. Keep a second recipient (another CMK or an age key) if you need a break-glass path.
+- A denied `Decrypt` (revoked key, IAM change, context mismatch) surfaces as [exit code 13](/kerf/reference/exit-codes/), distinct from "no credential at all" (exit 10).
+- **Local testing:** point at LocalStack with `KERF_KMS_ENDPOINT_AWS=http://localhost:4566`.
