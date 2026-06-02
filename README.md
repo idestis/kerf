@@ -107,9 +107,9 @@ The [`examples/`](examples/) directory is a worked demonstration in real git
 history. Each step is its own commit, so you can click the diff and see the
 byte-identity rule hold:
 
-1. **[Encrypt](https://github.com/idestis/kerf/commit/22bee6c185122e49376829ecd402fb822234f7fd)** — six lines of plaintext config become `config.kerf.yaml`; only secret-shaped keys turn into `ENC[...]`.
-2. **[Change one secret](https://github.com/idestis/kerf/commit/ebf543d2b85fdc232dbda1f775071f7c4ed2329b)** — rotating `database.password` is a two-line diff: the value and the file MAC. `api.token` is byte-identical.
-3. **[Add a new secret](https://github.com/idestis/kerf/commit/3e1e8d81db723db35485ede72f1748c23eeee916)** — adding `cache.password` adds two lines and updates the MAC; every pre-existing ciphertext line is unchanged.
+1. **[Encrypt](https://github.com/idestis/kerf/commit/37e38e0feea74c8f0223b71d3543cdcae96d4b27)** — six lines of plaintext config become `config.kerf.yaml`; only secret-shaped keys turn into `ENC[...]`.
+2. **[Change one secret](https://github.com/idestis/kerf/commit/e716e3a936ef6fdd96ee8ec5056a14013d9b129d)** — rotating `database.password` is a two-line diff: the value and the file MAC. `api.token` is byte-identical.
+3. **[Add a new secret](https://github.com/idestis/kerf/commit/25082ab5c7e3177d16487ff29afed2cc3427e425)** — adding `cache.password` adds two lines and updates the MAC; every pre-existing ciphertext line is unchanged.
 
 Compare that to SOPS, where any encrypt rerolls every nonce and the diff
 touches every encrypted line. Run [`examples/reproduce.sh`](examples/reproduce.sh)
