@@ -60,9 +60,14 @@ tasks:
     cmds:
       - |
         set -e
-        # Bump [workspace.package].version — the only version field; member
-        # crates inherit via version.workspace = true.
+        # Bump [workspace.package].version. Member crates inherit this via
+        # version.workspace = true.
         sed -i '' -E 's/^version = "[0-9]+\.[0-9]+\.[0-9]+"/version = "{{.VERSION}}"/' {{.CARGO_TOML}}
+        # Also bump the internal path-dependency version requirements in
+        # [workspace.dependencies]. Cargo requires a path dep's `version` to
+        # match the member's actual version, so these must track the bump or
+        # the workspace stops resolving (kerf-kms -> kerf-core, etc.).
+        sed -i '' -E '/path = "crates\/kerf-/ s/version = "[0-9]+\.[0-9]+\.[0-9]+"/version = "{{.VERSION}}"/' {{.CARGO_TOML}}
         # Refresh Cargo.lock so the bump is reflected before commit.
         cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace
         echo "Bumped workspace version to {{.VERSION}}"

@@ -7,7 +7,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -21,8 +21,8 @@ categories = ["command-line-utilities", "cryptography"]
 
 [workspace.dependencies]
 # Internal
-kerf-core = { path = "crates/kerf-core", version = "0.1.0" }
-kerf-kms  = { path = "crates/kerf-kms",  version = "0.1.0" }
+kerf-core = { path = "crates/kerf-core", version = "0.2.0" }
+kerf-kms  = { path = "crates/kerf-kms",  version = "0.2.0" }
 
 # Crypto — see SPEC § 5 and CLAUDE.md "Stack"
 aws-lc-rs = "1.13"
